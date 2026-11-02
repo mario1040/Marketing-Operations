@@ -9,3 +9,4 @@ coverage
 data/*.backup.json
 data/*.tmp
 *.dump
+data/*.pre-postgres-*.json
