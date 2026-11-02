@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useMarketing, LOCAL_STORAGE_API_TOKEN_KEY, API_BASE_URL } from '../context/MarketingContext';
+import { useMarketing, LOCAL_STORAGE_API_TOKEN_KEY, API_BASE_URL, apiFetch } from '../context/MarketingContext';
 import {
   Settings,
   Database,
@@ -125,7 +125,7 @@ export const SettingsView: React.FC = () => {
   const handleRunSafeRepair = async () => {
     setIsRepairing(true);
     try {
-      const res = await fetch('/api/diagnostics/repair', { method: 'POST' });
+      const res = await apiFetch('/api/diagnostics/repair', { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         setRepairMessage(`Repaired ${data.repaired} reference(s). Database is in pristine integrity.`);

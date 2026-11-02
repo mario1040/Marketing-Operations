@@ -92,30 +92,8 @@ export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {})
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const isRelativeApi = typeof input === 'string' && input.startsWith('/api/');
-  const directUrl = isRelativeApi ? `${API_BASE_URL}${input}` : input;
-
-  let response: Response;
-  try {
-    response = await fetch(directUrl, { ...init, headers });
-    // If direct CORS request is blocked by backend returning 500 origin error, fallback to same-origin proxy
-    if (!response.ok && response.status === 500 && isRelativeApi) {
-      const proxyRes = await fetch(input, { ...init, headers }).catch(() => null);
-      if (proxyRes && (proxyRes.ok || proxyRes.status === 401)) {
-        response = proxyRes;
-      }
-    }
-  } catch (netErr) {
-    if (isRelativeApi) {
-      try {
-        response = await fetch(input, { ...init, headers });
-      } catch {
-        throw netErr;
-      }
-    } else {
-      throw netErr;
-    }
-  }
+  // Route /api calls through the same-origin proxy to ensure consistent authentication and eliminate CORS issues
+  const response = await fetch(input, { ...init, headers });
 
   if (response.status === 401) {
     window.dispatchEvent(new CustomEvent('marketing-api-unauthorized'));
@@ -754,9 +732,12 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             body: JSON.stringify(savedItem),
           });
         } catch (e) {
-          console.warn('API update failed, state persisted locally:', e);
-        setIsOffline(true);
-        throw e;
+          console.warn('API content update failed; rolling back optimistic update:', e);
+          setAllContent(allContent);
+          setAllActivities(allActivities);
+          persistState(allWorkspaces, allBrands, allContent, allCampaigns, allTeam, allActivities);
+          setIsOffline(true);
+          throw e;
         }
       } else {
         const newId = `cnt-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
@@ -792,9 +773,12 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             body: JSON.stringify(savedItem),
           });
         } catch (e) {
-          console.warn('API create failed, state persisted locally:', e);
-        setIsOffline(true);
-        throw e;
+          console.warn('API content create failed; rolling back optimistic update:', e);
+          setAllContent(allContent);
+          setAllActivities(allActivities);
+          persistState(allWorkspaces, allBrands, allContent, allCampaigns, allTeam, allActivities);
+          setIsOffline(true);
+          throw e;
         }
       }
 
@@ -829,7 +813,10 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       try {
         await apiFetch(`/api/content/${id}`, { method: 'DELETE' });
       } catch (e) {
-        console.warn('API delete failed, synced locally:', e);
+        console.warn('API content delete failed; rolling back optimistic update:', e);
+        setAllContent(allContent);
+        setAllActivities(allActivities);
+        persistState(allWorkspaces, allBrands, allContent, allCampaigns, allTeam, allActivities);
         setIsOffline(true);
         throw e;
       }
@@ -880,7 +867,10 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           body: JSON.stringify(updatedItem),
         });
       } catch (e) {
-        console.warn('API status update failed, synced locally:', e);
+        console.warn('API status update failed; rolling back optimistic update:', e);
+        setAllContent(allContent);
+        setAllActivities(allActivities);
+        persistState(allWorkspaces, allBrands, allContent, allCampaigns, allTeam, allActivities);
         setIsOffline(true);
         throw e;
       }
@@ -927,7 +917,10 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           body: JSON.stringify(updatedItem),
         });
       } catch (e) {
-        console.warn('API date update failed, synced locally:', e);
+        console.warn('API date update failed; rolling back optimistic update:', e);
+        setAllContent(allContent);
+        setAllActivities(allActivities);
+        persistState(allWorkspaces, allBrands, allContent, allCampaigns, allTeam, allActivities);
         setIsOffline(true);
         throw e;
       }
