@@ -1,4 +1,5 @@
 name: Marketing API CI
+# Re-run validation after resolving the Vite / esbuild peer dependency conflict.
 
 on:
   pull_request:
