@@ -46,7 +46,7 @@ jobs:
           export PORT=3000
 
           start_api() {
-            npm run start > /tmp/marketing-api.log 2>&1 &
+            npm run start:api > /tmp/marketing-api.log 2>&1 &
             API_PID=$!
             for attempt in $(seq 1 30); do
               if curl -fsS http://127.0.0.1:3000/api/health >/tmp/health.json; then
