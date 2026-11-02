@@ -715,7 +715,7 @@ export class StorageRepository {
     return Promise.resolve();
   }
 
-  public async importBrowserCache(raw: any): Promise<{ imported: boolean; counts?: Record<string, number>; message?: string }> {
+}> {
     if (!raw) return { imported: false, message: 'No payload provided' };
     try {
       const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
