@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { Pool, PoolClient } from 'pg';
-import { StorageRepository, DatabaseSchema } from './storage';
+import { Pool, type PoolClient } from 'pg';
+import { StorageRepository, type DatabaseSchema } from './storage';
 
 const COLLECTIONS = [
   { key: 'workspaces', table: 'marketing_workspaces' },
