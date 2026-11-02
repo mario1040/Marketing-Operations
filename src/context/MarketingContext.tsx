@@ -71,6 +71,7 @@ interface MarketingContextType {
   deleteCampaign: (id: string) => Promise<boolean>;
   createTeamMember: (member: Partial<TeamMember>) => Promise<TeamMember>;
   resetToInitialData: () => Promise<void>;
+  refreshFromServer: () => Promise<void>;
   runIntegrityAudit: () => Promise<IntegrityDiagnosticReport>;
 
   isLoading: boolean;
@@ -170,66 +171,62 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setFilters(prev => ({ ...prev, brandId: activeBrandId }));
   }, [activeBrandId]);
 
-  // Load exclusively from the shared PostgreSQL API. Never silently use browser data or demo seeds.
-  useEffect(() => {
-    let cancelled = false;
+  // Fetch the authoritative database snapshot; never read business records from browser storage.
+  const refreshFromServer = useCallback(async (): Promise<void> => {
+    setIsLoading(true);
+    try {
+      const response = await apiFetch('/api/data', { method: 'GET', cache: 'no-store' });
+      const data = await response.json();
 
-    async function loadData() {
-      setIsLoading(true);
-      try {
-        const response = await apiFetch('/api/data', { method: 'GET', cache: 'no-store' });
-        const data = await response.json();
-
-        if (
-          !data ||
-          !Array.isArray(data.workspaces) ||
-          !Array.isArray(data.brands) ||
-          !Array.isArray(data.content) ||
-          !Array.isArray(data.campaigns) ||
-          !Array.isArray(data.team) ||
-          !Array.isArray(data.activities)
-        ) {
-          throw new Error('The PostgreSQL API returned an invalid data snapshot.');
-        }
-
-        if (cancelled) return;
-        setAllWorkspaces(data.workspaces);
-        setAllBrands(data.brands);
-        setAllContent(data.content);
-        setAllCampaigns(data.campaigns);
-        setAllTeam(data.team);
-        setAllActivities(data.activities);
-        setIsOffline(false);
-        setLastSavedAt(new Date().toLocaleTimeString());
-
-        // Remove obsolete browser-side database copies only after the server snapshot is valid.
-        try {
-          localStorage.removeItem('marketing_ops_db_v2');
-          localStorage.removeItem('marketing_ops_active_ws_v2');
-        } catch (storageError) {
-          console.warn('Could not remove obsolete browser data:', storageError);
-        }
-      } catch (error) {
-        console.error('PostgreSQL data load failed; browser fallback is disabled:', error);
-        if (cancelled) return;
-        setAllWorkspaces([]);
-        setAllBrands([]);
-        setAllContent([]);
-        setAllCampaigns([]);
-        setAllTeam([]);
-        setAllActivities([]);
-        setIsOffline(true);
-        setLastSavedAt(null);
-      } finally {
-        if (!cancelled) setIsLoading(false);
+      if (
+        !data ||
+        !Array.isArray(data.workspaces) ||
+        !Array.isArray(data.brands) ||
+        !Array.isArray(data.content) ||
+        !Array.isArray(data.campaigns) ||
+        !Array.isArray(data.team) ||
+        !Array.isArray(data.activities)
+      ) {
+        throw new Error('The PostgreSQL API returned an invalid data snapshot.');
       }
-    }
 
-    void loadData();
-    return () => {
-      cancelled = true;
-    };
+      setAllWorkspaces(data.workspaces);
+      setAllBrands(data.brands);
+      setAllContent(data.content);
+      setAllCampaigns(data.campaigns);
+      setAllTeam(data.team);
+      setAllActivities(data.activities);
+      setIsOffline(false);
+      setLastSavedAt(new Date().toLocaleTimeString());
+
+      // Purge all legacy application data/credentials only after PostgreSQL has returned a valid snapshot.
+      try {
+        localStorage.removeItem('marketing_ops_db_v2');
+        localStorage.removeItem('marketing_ops_active_ws_v2');
+        localStorage.removeItem('marketing_ops_api_token_v1');
+      } catch (storageError) {
+        console.warn('Could not remove obsolete browser storage:', storageError);
+      }
+    } catch (error) {
+      console.error('PostgreSQL data load failed; browser fallback is disabled:', error);
+      setAllWorkspaces([]);
+      setAllBrands([]);
+      setAllContent([]);
+      setAllCampaigns([]);
+      setAllTeam([]);
+      setAllActivities([]);
+      setIsOffline(true);
+      setLastSavedAt(null);
+      throw error;
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
+
+  // Initial load uses exactly the same server-only path as the Settings connection test.
+  useEffect(() => {
+    void refreshFromServer().catch(() => undefined);
+  }, [refreshFromServer]);
 
   // Intentionally no-op: business records are never persisted in browser storage.
   // Each mutation is committed through apiFetch to the PostgreSQL backend.
@@ -1203,6 +1200,7 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         deleteCampaign,
         createTeamMember,
         resetToInitialData,
+        refreshFromServer,
         runIntegrityAudit,
 
         isLoading,
