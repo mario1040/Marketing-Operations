@@ -1,7 +1,9 @@
 import express from 'express';
+import cors from 'cors';
+import { timingSafeEqual } from 'node:crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { StorageRepository } from './src/server/storage';
+import { PostgresStorageRepository } from './src/server/postgres-storage';
 import { ContentItem, Campaign, TeamMember, Workspace, Brand } from './src/types';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -10,14 +12,60 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
 
 async function startServer() {
+  const storage = await PostgresStorageRepository.connect();
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
+  const apiToken = process.env.API_TOKEN;
+  if (!apiToken || apiToken.length < 32) {
+    throw new Error('API_TOKEN must be configured with at least 32 characters');
+  }
+  const allowedOrigins = (process.env.CORS_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean);
+  app.use(cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error('Origin is not allowed by CORS'));
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    maxAge: 600,
+  }));
+  app.use(express.json({ limit: '2mb' }));
 
-  const storage = new StorageRepository();
+  // Health check is intentionally public and exposes no application data.
+  app.get('/api/health', async (_req, res) => {
+    try {
+      await storage.ping();
+      res.json({ status: 'ok', database: 'connected', time: new Date().toISOString() });
+    } catch {
+      res.status(503).json({ status: 'error', database: 'unavailable' });
+    }
+  });
 
-  // Health check endpoint
-  app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString() });
+  // All data endpoints require a bearer token. CORS is not authentication.
+  app.use('/api', (req, res, next) => {
+    const authorization = req.header('authorization') || '';
+    const supplied = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    const expectedBuffer = Buffer.from(apiToken);
+    const suppliedBuffer = Buffer.from(supplied);
+    if (suppliedBuffer.length !== expectedBuffer.length || !timingSafeEqual(suppliedBuffer, expectedBuffer)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    next();
+  });
+
+  // Do not acknowledge a mutation until its PostgreSQL snapshot is committed.
+  app.use((req, res, next) => {
+    const sendJson = res.json.bind(res);
+    res.json = ((body: unknown) => {
+      void storage.flush()
+        .then(() => sendJson(body))
+        .catch(error => {
+          console.error('PostgreSQL commit failed:', error);
+          if (!res.headersSent) res.status(503);
+          sendJson({ error: 'Database persistence failed; retry the operation' });
+        });
+      return res;
+    }) as typeof res.json;
+    next();
   });
 
   // --- WORKSPACE ENDPOINTS ---
@@ -274,9 +322,17 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT} (isDev: ${isDev})`);
+  const server = app.listen(PORT, () => {
+    console.log(`Marketing API listening on port ${PORT} (isDev: ${isDev})`);
   });
+
+  const shutdown = async () => {
+    server.close();
+    await storage.close();
+    process.exit(0);
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
 startServer().catch(err => {
