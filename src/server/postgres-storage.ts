@@ -46,13 +46,13 @@ export class PostgresStorageRepository extends StorageRepository {
       )
     `);
 
+    this.initialized = true;
     const existing = await this.pool.query<{ payload: DatabaseSchema }>(
       "SELECT payload FROM marketing_app_state WHERE id = 'primary'"
     );
 
     if (existing.rowCount && existing.rows[0]) {
       this.setDatabase(existing.rows[0].payload);
-      this.initialized = true;
       return;
     }
 
@@ -71,8 +71,8 @@ export class PostgresStorageRepository extends StorageRepository {
     }
 
     this.setDatabase(initial);
-    this.initialized = true;
     await this.persistSnapshot(initial);
+    await this.flush();
   }
 
   protected save(data: DatabaseSchema): void {
