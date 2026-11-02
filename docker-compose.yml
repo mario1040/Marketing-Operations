@@ -3,7 +3,7 @@ services:
     container_name: marketing-api
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.api
     restart: unless-stopped
     environment:
       NODE_ENV: production
