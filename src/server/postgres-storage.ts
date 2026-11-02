@@ -100,14 +100,14 @@ export class PostgresStorageRepository extends StorageRepository {
   }
 
   private async loadSnapshot(client: Pool | PoolClient): Promise<DatabaseSchema> {
-    const result = {} as DatabaseSchema;
+    const result: Record<string, unknown[]> = {};
     for (const collection of COLLECTIONS) {
-      const rows = await client.query<{ payload: DatabaseSchema[typeof collection.key][number] }>(
+      const rows = await client.query<{ payload: unknown }>(
         `SELECT payload FROM ${collection.table} ORDER BY position ASC`
       );
-      (result[collection.key] as unknown[]) = rows.rows.map(row => row.payload);
+      result[collection.key] = rows.rows.map(row => row.payload);
     }
-    return result;
+    return result as unknown as DatabaseSchema;
   }
 
   private async writeSnapshot(client: PoolClient, data: DatabaseSchema): Promise<void> {
