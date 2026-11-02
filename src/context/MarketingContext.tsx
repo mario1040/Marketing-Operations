@@ -105,6 +105,9 @@ async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promi
     if (response.status === 401) localStorage.removeItem(LOCAL_STORAGE_API_TOKEN_KEY);
     throw new Error(details?.error || `Marketing API request failed (${response.status})`);
   }
+  if ((init.method || 'GET').toUpperCase() !== 'GET') {
+    window.dispatchEvent(new Event('marketing-api-saved'));
+  }
   return response;
 }
 
@@ -157,6 +160,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } catch (e) {
       console.warn('Could not persist active workspace ID:', e);
     }
+  }, []);
+
+  useEffect(() => {
+    const handleSaved = () => {
+      setLastSavedAt(new Date().toLocaleTimeString());
+      setIsOffline(false);
+    };
+    window.addEventListener('marketing-api-saved', handleSaved);
+    return () => window.removeEventListener('marketing-api-saved', handleSaved);
   }, []);
 
   // Sync activeBrandId with filters
@@ -237,34 +249,9 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     loadData();
   }, []);
 
-  // Persist state to localStorage
-  const persistState = useCallback(
-    (
-      newWorkspaces = allWorkspaces,
-      newBrands = allBrands,
-      newContent = allContent,
-      newCampaigns = allCampaigns,
-      newTeam = allTeam,
-      newActivities = allActivities
-    ) => {
-      const payload = {
-        workspaces: newWorkspaces,
-        brands: newBrands,
-        content: newContent,
-        campaigns: newCampaigns,
-        team: newTeam,
-        activities: newActivities,
-      };
-
-      try {
-        localStorage.setItem(LOCAL_STORAGE_DB_KEY, JSON.stringify(payload));
-      } catch (e) {
-        console.error('Failed to sync to localStorage:', e);
-      }
-      setLastSavedAt(new Date().toLocaleTimeString());
-    },
-    [allWorkspaces, allBrands, allContent, allCampaigns, allTeam, allActivities]
-  );
+  // PostgreSQL is the source of truth. Do not cache optimistic writes locally;
+  // the browser cache is retained only as a one-time migration source / offline read cache.
+  const persistState = useCallback((..._snapshot: unknown[]) => undefined, []);
 
   // Active workspace object
   const activeWorkspace =
@@ -1043,6 +1030,7 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const resetToInitialData = useCallback(async () => {
+    await apiFetch('/api/reset-data', { method: 'POST' });
     setAllWorkspaces(INITIAL_WORKSPACES);
     setAllBrands(INITIAL_BRANDS);
     setAllContent(INITIAL_CONTENT);
@@ -1051,14 +1039,6 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setAllActivities(INITIAL_ACTIVITIES);
     setActiveWorkspaceId(DEFAULT_WORKSPACE_ID);
     localStorage.removeItem(LOCAL_STORAGE_DB_KEY);
-
-    try {
-      await apiFetch('/api/reset-data', { method: 'POST' });
-    } catch (e) {
-      console.warn('API reset failed:', e);
-      setIsOffline(true);
-      throw e;
-    }
   }, [setActiveWorkspaceId]);
 
   // Filtered items based on active filters in current workspace
