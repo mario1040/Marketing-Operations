@@ -33,6 +33,7 @@ export const SettingsView: React.FC = () => {
     activeWorkspace,
     resetToInitialData,
     runIntegrityAudit,
+    migrateLocalCacheToServer,
     lastSavedAt,
     isOffline,
     exportToJson,
@@ -46,6 +47,8 @@ export const SettingsView: React.FC = () => {
   const [diagnosticReport, setDiagnosticReport] = useState<IntegrityDiagnosticReport | null>(null);
   const [repairMessage, setRepairMessage] = useState<string | null>(null);
   const [isRepairing, setIsRepairing] = useState(false);
+  const [isMigratingCache, setIsMigratingCache] = useState(false);
+  const [migrationMessage, setMigrationMessage] = useState<string | null>(null);
 
   // API Token State
   const [tokenInput, setTokenInput] = useState(() => {
@@ -106,6 +109,26 @@ export const SettingsView: React.FC = () => {
         type: 'invalid',
         message: `Network error reaching backend: ${err?.message || 'Check connection'}`,
       });
+    }
+  };
+
+  const handleMigrateLocalCache = async () => {
+    setIsMigratingCache(true);
+    setMigrationMessage(null);
+    try {
+      const result = await migrateLocalCacheToServer();
+      if (result.imported) {
+        const counts = result.counts
+          ? Object.entries(result.counts).map(([key, value]) => `${key}: ${value}`).join(' · ')
+          : 'Shared database refreshed';
+        setMigrationMessage(`Local browser data imported successfully. ${counts}`);
+      } else {
+        setMigrationMessage('The one-time browser-cache migration was already completed. This screen has been refreshed from PostgreSQL.');
+      }
+    } catch (error) {
+      setMigrationMessage(error instanceof Error ? error.message : 'Browser-cache migration failed.');
+    } finally {
+      setIsMigratingCache(false);
     }
   };
 
@@ -448,6 +471,26 @@ export const SettingsView: React.FC = () => {
               <span>{tokenStatus.message}</span>
             </div>
           )}
+
+          <div className="pt-3 border-t border-slate-100 space-y-2">
+            <p className="text-xs text-slate-600">
+              To recover records created before PostgreSQL was connected, run this once from the browser that contains the newest local records. This merges those records into the shared database; it does not delete the browser cache.
+            </p>
+            <button
+              type="button"
+              onClick={handleMigrateLocalCache}
+              disabled={isMigratingCache}
+              className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-slate-800 hover:bg-slate-900 disabled:opacity-60 rounded-lg transition-colors cursor-pointer"
+            >
+              <Database size={14} className={isMigratingCache ? 'animate-pulse' : ''} />
+              <span>{isMigratingCache ? 'Importing local records...' : 'Import this browser’s saved data to PostgreSQL'}</span>
+            </button>
+            {migrationMessage && (
+              <div className="p-3 rounded-lg text-xs border border-slate-200 bg-slate-50 text-slate-700">
+                {migrationMessage}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
