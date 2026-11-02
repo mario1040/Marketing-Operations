@@ -33,6 +33,7 @@ export const SettingsView: React.FC = () => {
     activeWorkspace,
     resetToInitialData,
     runIntegrityAudit,
+    refreshFromServer,
     lastSavedAt,
     isOffline,
     exportToJson,
@@ -76,13 +77,14 @@ export const SettingsView: React.FC = () => {
       }
       // Use the same-origin proxy so Cloud Run and browser clients follow one
       // consistent path and do not depend on cross-origin CORS behavior.
-      const testRes = await fetch('/api/workspaces', { headers });
+      const testRes = await fetch('/api/workspaces', { headers, cache: 'no-store' });
 
       if (testRes.ok) {
         setApiAccessToken(clean);
+        await refreshFromServer();
         setTokenStatus({
           type: 'valid',
-          message: 'Connection successful! Authenticated with backend database (HTTP 200). Token is held in memory only.',
+          message: 'Connection successful! Authenticated with PostgreSQL (HTTP 200). Data loaded from the server; browser storage is disabled.',
         });
       } else if (testRes.status === 401) {
         setApiAccessToken('');
