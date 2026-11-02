@@ -71,7 +71,6 @@ interface MarketingContextType {
   deleteCampaign: (id: string) => Promise<boolean>;
   createTeamMember: (member: Partial<TeamMember>) => Promise<TeamMember>;
   resetToInitialData: () => Promise<void>;
-  migrateLocalCacheToServer: () => Promise<{ imported: boolean; counts?: Record<string, number> }>;
   runIntegrityAudit: () => Promise<IntegrityDiagnosticReport>;
 
   isLoading: boolean;
@@ -81,20 +80,24 @@ interface MarketingContextType {
   exportToJson: () => void;
 }
 
-export const LOCAL_STORAGE_DB_KEY = 'marketing_ops_db_v2';
-export const LOCAL_STORAGE_ACTIVE_WS_KEY = 'marketing_ops_active_ws_v2';
-export const LOCAL_STORAGE_API_TOKEN_KEY = 'marketing_ops_api_token_v1';
+let apiAccessToken = '';
+
+export function setApiAccessToken(token: string): void {
+  apiAccessToken = token.trim();
+}
+
 export const API_BASE_URL = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || 'https://marketing-api.bezaverse.com';
 
 export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
-  const token = localStorage.getItem(LOCAL_STORAGE_API_TOKEN_KEY);
+  const token = apiAccessToken;
   const headers = new Headers(init.headers);
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
 
   // Route /api calls through the same-origin proxy to ensure consistent authentication and eliminate CORS issues
-  const response = await fetch(input, { ...init, headers });
+  // API responses must never be read from or written to the browser HTTP cache.
+  const response = await fetch(input, { ...init, headers, cache: 'no-store' });
 
   if (response.status === 401) {
     window.dispatchEvent(new CustomEvent('marketing-api-unauthorized'));
@@ -128,21 +131,15 @@ const MarketingContext = createContext<MarketingContextType | undefined>(undefin
 
 export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // All Database Collections
-  const [allWorkspaces, setAllWorkspaces] = useState<Workspace[]>(INITIAL_WORKSPACES);
-  const [allBrands, setAllBrands] = useState<Brand[]>(INITIAL_BRANDS);
-  const [allContent, setAllContent] = useState<ContentItem[]>(INITIAL_CONTENT);
-  const [allCampaigns, setAllCampaigns] = useState<Campaign[]>(INITIAL_CAMPAIGNS);
-  const [allTeam, setAllTeam] = useState<TeamMember[]>(INITIAL_TEAM);
-  const [allActivities, setAllActivities] = useState<ActivityLog[]>(INITIAL_ACTIVITIES);
+  const [allWorkspaces, setAllWorkspaces] = useState<Workspace[]>([]);
+  const [allBrands, setAllBrands] = useState<Brand[]>([]);
+  const [allContent, setAllContent] = useState<ContentItem[]>([]);
+  const [allCampaigns, setAllCampaigns] = useState<Campaign[]>([]);
+  const [allTeam, setAllTeam] = useState<TeamMember[]>([]);
+  const [allActivities, setAllActivities] = useState<ActivityLog[]>([]);
 
   // Active Workspace & Brand state
-  const [activeWorkspaceId, setActiveWorkspaceIdState] = useState<string>(() => {
-    try {
-      return localStorage.getItem(LOCAL_STORAGE_ACTIVE_WS_KEY) || DEFAULT_WORKSPACE_ID;
-    } catch {
-      return DEFAULT_WORKSPACE_ID;
-    }
-  });
+  const [activeWorkspaceId, setActiveWorkspaceIdState] = useState<string>(DEFAULT_WORKSPACE_ID);
 
   const [activeBrandId, setActiveBrandId] = useState<BrandId | 'all'>('all');
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
@@ -157,11 +154,6 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setActiveWorkspaceIdState(id);
     setActiveBrandId('all');
     setFilters({ ...defaultFilters, brandId: 'all' });
-    try {
-      localStorage.setItem(LOCAL_STORAGE_ACTIVE_WS_KEY, id);
-    } catch (e) {
-      console.warn('Could not persist active workspace ID:', e);
-    }
   }, []);
 
   useEffect(() => {
@@ -178,150 +170,80 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setFilters(prev => ({ ...prev, brandId: activeBrandId }));
   }, [activeBrandId]);
 
-  // Initial load from API or fallback localStorage
+  // Load exclusively from the shared PostgreSQL API. Never silently use browser data or demo seeds.
   useEffect(() => {
+    let cancelled = false;
+
     async function loadData() {
       setIsLoading(true);
       try {
-        // PostgreSQL is authoritative. Legacy browser data is imported only
-        // through the explicit Settings action so another browser cannot win
-        // the one-time migration marker with an empty or stale cache.
-        const res = await apiFetch('/api/data', { cache: 'no-store' });
-        if (res.ok) {
-          const data = await res.json();
-          if (data && Array.isArray(data.workspaces) && Array.isArray(data.content)) {
-            setAllWorkspaces(data.workspaces || INITIAL_WORKSPACES);
-            setAllBrands(data.brands || INITIAL_BRANDS);
-            setAllContent(data.content || INITIAL_CONTENT);
-            setAllCampaigns(data.campaigns || INITIAL_CAMPAIGNS);
-            setAllTeam(data.team || INITIAL_TEAM);
-            setAllActivities(data.activities || INITIAL_ACTIVITIES);
-            setIsOffline(false);
-            setLastSavedAt(new Date().toLocaleTimeString());
-            localStorage.setItem(LOCAL_STORAGE_DB_KEY, JSON.stringify(data));
-            setIsLoading(false);
-            return;
-          }
+        const response = await apiFetch('/api/data', { method: 'GET', cache: 'no-store' });
+        const data = await response.json();
+
+        if (
+          !data ||
+          !Array.isArray(data.workspaces) ||
+          !Array.isArray(data.brands) ||
+          !Array.isArray(data.content) ||
+          !Array.isArray(data.campaigns) ||
+          !Array.isArray(data.team) ||
+          !Array.isArray(data.activities)
+        ) {
+          throw new Error('The PostgreSQL API returned an invalid data snapshot.');
         }
-      } catch (err) {
-        console.warn('Backend API unavailable, falling back to cache:', err);
+
+        if (cancelled) return;
+        setAllWorkspaces(data.workspaces);
+        setAllBrands(data.brands);
+        setAllContent(data.content);
+        setAllCampaigns(data.campaigns);
+        setAllTeam(data.team);
+        setAllActivities(data.activities);
+        setIsOffline(false);
+        setLastSavedAt(new Date().toLocaleTimeString());
+
+        // Remove obsolete browser-side database copies only after the server snapshot is valid.
+        try {
+          localStorage.removeItem('marketing_ops_db_v2');
+          localStorage.removeItem('marketing_ops_active_ws_v2');
+        } catch (storageError) {
+          console.warn('Could not remove obsolete browser data:', storageError);
+        }
+      } catch (error) {
+        console.error('PostgreSQL data load failed; browser fallback is disabled:', error);
+        if (cancelled) return;
+        setAllWorkspaces([]);
+        setAllBrands([]);
+        setAllContent([]);
+        setAllCampaigns([]);
+        setAllTeam([]);
+        setAllActivities([]);
         setIsOffline(true);
+        setLastSavedAt(null);
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
-
-      // Fallback cache
-      try {
-        const cached = localStorage.getItem(LOCAL_STORAGE_DB_KEY);
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (parsed && Array.isArray(parsed.workspaces)) {
-            setAllWorkspaces(parsed.workspaces);
-            setAllBrands(parsed.brands || INITIAL_BRANDS);
-            setAllContent(parsed.content || INITIAL_CONTENT);
-            setAllCampaigns(parsed.campaigns || INITIAL_CAMPAIGNS);
-            setAllTeam(parsed.team || INITIAL_TEAM);
-            setAllActivities(parsed.activities || INITIAL_ACTIVITIES);
-            setIsOffline(true);
-            setIsLoading(false);
-            return;
-          }
-        }
-      } catch (e) {
-        console.error('LocalStorage read error:', e);
-      }
-
-      // Default seeds
-      setAllWorkspaces(INITIAL_WORKSPACES);
-      setAllBrands(INITIAL_BRANDS);
-      setAllContent(INITIAL_CONTENT);
-      setAllCampaigns(INITIAL_CAMPAIGNS);
-      setAllTeam(INITIAL_TEAM);
-      setAllActivities(INITIAL_ACTIVITIES);
-      setIsLoading(false);
     }
 
-    loadData();
+    void loadData();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Persist state locally to ensure zero data loss across sessions and offline resilience
+  // Intentionally no-op: business records are never persisted in browser storage.
+  // Each mutation is committed through apiFetch to the PostgreSQL backend.
   const persistState = useCallback(
     (
-      workspacesToSave: Workspace[],
-      brandsToSave: Brand[] = allBrands,
-      contentToSave: ContentItem[] = allContent,
-      campaignsToSave: Campaign[] = allCampaigns,
-      teamToSave: TeamMember[] = allTeam,
-      activitiesToSave: ActivityLog[] = allActivities
-    ) => {
-      try {
-        const fullPayload = {
-          workspaces: workspacesToSave,
-          brands: brandsToSave,
-          content: contentToSave,
-          campaigns: campaignsToSave,
-          team: teamToSave,
-          activities: activitiesToSave,
-        };
-        localStorage.setItem(LOCAL_STORAGE_DB_KEY, JSON.stringify(fullPayload));
-        setLastSavedAt(new Date().toLocaleTimeString());
-      } catch (e) {
-        console.warn('Could not persist state locally:', e);
-      }
-    },
-    [allBrands, allContent, allCampaigns, allTeam, allActivities]
+      _workspacesToSave: Workspace[],
+      _brandsToSave?: Brand[],
+      _contentToSave?: ContentItem[],
+      _campaignsToSave?: Campaign[],
+      _teamToSave?: TeamMember[],
+      _activitiesToSave?: ActivityLog[]
+    ) => undefined,
+    []
   );
-
-  // Explicit, one-time import from the browser that contains the user's unsynced legacy data.
-  // Do not run this automatically: the first browser to call the migration endpoint
-  // owns the global migration marker.
-  const migrateLocalCacheToServer = useCallback(async (): Promise<{ imported: boolean; counts?: Record<string, number> }> => {
-    const cached = localStorage.getItem(LOCAL_STORAGE_DB_KEY);
-    if (!cached) throw new Error('No local browser cache was found in this browser.');
-
-    let payload: unknown;
-    try {
-      payload = JSON.parse(cached);
-    } catch {
-      throw new Error('The local browser cache is not valid JSON and cannot be imported.');
-    }
-
-    if (!payload || typeof payload !== 'object') {
-      throw new Error('The local browser cache has an invalid format.');
-    }
-
-    const migrationResponse = await apiFetch('/api/migrations/browser-cache', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const migration = await migrationResponse.json() as { imported: boolean; counts?: Record<string, number> };
-
-    // Always refresh from the shared database after the migration attempt.
-    const dataResponse = await apiFetch('/api/data', { cache: 'no-store' });
-    const data = await dataResponse.json();
-    if (
-      !data ||
-      !Array.isArray(data.workspaces) ||
-      !Array.isArray(data.brands) ||
-      !Array.isArray(data.content) ||
-      !Array.isArray(data.campaigns) ||
-      !Array.isArray(data.team) ||
-      !Array.isArray(data.activities)
-    ) {
-      throw new Error('The shared database returned an invalid data snapshot.');
-    }
-
-    setAllWorkspaces(data.workspaces);
-    setAllBrands(data.brands);
-    setAllContent(data.content);
-    setAllCampaigns(data.campaigns);
-    setAllTeam(data.team);
-    setAllActivities(data.activities);
-    persistState(data.workspaces, data.brands, data.content, data.campaigns, data.team, data.activities);
-    setIsOffline(false);
-    setLastSavedAt(new Date().toLocaleTimeString());
-
-    return migration;
-  }, [persistState]);
 
   // Active workspace object
   const activeWorkspace =
@@ -1156,7 +1078,6 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setAllTeam(INITIAL_TEAM);
     setAllActivities(INITIAL_ACTIVITIES);
     setActiveWorkspaceId(DEFAULT_WORKSPACE_ID);
-    localStorage.removeItem(LOCAL_STORAGE_DB_KEY);
   }, [setActiveWorkspaceId]);
 
   // Filtered items based on active filters in current workspace
@@ -1282,7 +1203,6 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         deleteCampaign,
         createTeamMember,
         resetToInitialData,
-        migrateLocalCacheToServer,
         runIntegrityAudit,
 
         isLoading,
