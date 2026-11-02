@@ -23,7 +23,7 @@ existing `postgres` folder, not inside or over it.
 
 ```powershell
 cd C:\docker-data\marketing-platform
-git clone --branch feat/postgres-persistence https://github.com/mario1040/Marketing-Operations.git app
+git clone --branch main https://github.com/mario1040/Marketing-Operations.git app
 cd .\app
 ```
 
@@ -73,9 +73,7 @@ The first successful start creates the six application tables and imports
 `data/marketing_db.json` only if the Marketing schema has not already been
 initialized. It never drops or truncates unrelated PostgreSQL tables or
 touches the Evolution / n8n databases. The JSON source is mounted read-only.
-Existing browser-local data is merged once through the authenticated
-`/api/migrations/browser-cache` endpoint before the frontend loads the server
-snapshot; browser records take precedence on matching IDs.
+The frontend does not read, write, import, or fall back to browser-side business data. PostgreSQL is the only source of operational records.
 
 ## Verify
 
@@ -96,17 +94,19 @@ Set-Clipboard $token
 Remove-Variable token
 ```
 
-When the updated frontend first loads, it asks for the Marketing API access
-token. Paste it once; it is stored in that browser's local storage. The API
-origin defaults to `https://marketing-api.bezaverse.com`.
+After deploying the frontend, open the existing Google AI Studio project connected to this repository and deploy the latest `main` source to the existing frontend Cloud Run service. Do not redeploy or modify the `marketing-api` or `marketing-postgres` services for this frontend-only change.
+
+The frontend API proxy requests `Accept-Encoding: identity` and disables HTTP caching for API data. The backend and proxy send `Cache-Control: no-store` on API responses.
+
+For each new page session, open Settings, enter the Marketing API access token, and press **Test Access**. After HTTP 200, the dashboard loads the shared PostgreSQL snapshot. The token stays in page memory only and is not stored in browser storage; enter it again after a full page reload.
 
 ## Operational notes
 
 - Keep `.env`, JSON backups, and `.dump` files out of Git.
 - Never publish PostgreSQL port 5432.
 - The API requires an exact CORS origin allowlist and a bearer token.
-- The browser-cache merge is one-time and ID-based; it preserves distinct
-  records and lets the existing browser copy win for matching IDs.
+- Business records are never persisted in `localStorage`, `sessionStorage`, IndexedDB, or the browser HTTP cache.
+- If the API is unavailable or authentication is missing, the UI shows a disconnected state and does not display local or demo data.
 - Take regular PostgreSQL backups after deployment. Do not run
   `docker compose down -v`, `docker volume prune`, or remove the existing
   named volumes.
