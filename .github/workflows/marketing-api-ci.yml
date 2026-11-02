@@ -1,5 +1,4 @@
 name: Marketing API CI
-# Re-run validation after resolving the Vite / esbuild peer dependency conflict.
 
 on:
   pull_request:
@@ -8,8 +7,22 @@ on:
     branches: [feat/postgres-persistence]
 
 jobs:
-  build:
+  build-and-postgres-smoke:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: marketing_ops
+          POSTGRES_USER: marketing_admin
+          POSTGRES_PASSWORD: ci_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U marketing_admin -d marketing_ops"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,3 +36,47 @@ jobs:
         run: npm run lint
       - name: Build frontend
         run: npm run build
+      - name: PostgreSQL persistence smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DATABASE_URL='postgresql://marketing_admin:ci_test_password@127.0.0.1:5432/marketing_ops'
+          export API_TOKEN='ci_only_token_with_more_than_32_characters'
+          export NODE_ENV=production
+          export PORT=3000
+
+          start_api() {
+            npm run start > /tmp/marketing-api.log 2>&1 &
+            API_PID=$!
+            for attempt in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:3000/api/health >/tmp/health.json; then
+                grep -q '"database":"connected"' /tmp/health.json
+                return 0
+              fi
+              sleep 2
+            done
+            cat /tmp/marketing-api.log
+            return 1
+          }
+
+          start_api
+          unauthorized_status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/data)
+          test "$unauthorized_status" = "401"
+
+          created=$(curl -fsS -X POST http://127.0.0.1:3000/api/workspaces \
+            -H "Authorization: Bearer $API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"CI PostgreSQL Persistence Probe"}')
+          created_id=$(node -e "const x=JSON.parse(process.argv[1]); process.stdout.write(x.id)" "$created")
+          test -n "$created_id"
+
+          kill "$API_PID"
+          wait "$API_PID" || true
+          start_api
+
+          curl -fsS http://127.0.0.1:3000/api/data \
+            -H "Authorization: Bearer $API_TOKEN" >/tmp/marketing-data.json
+          node -e "const d=require('/tmp/marketing-data.json'); if(!d.workspaces.some(x=>x.id===process.argv[1])) process.exit(1); console.log('PostgreSQL restart persistence verified:', process.argv[1])" "$created_id"
+
+          kill "$API_PID"
+          wait "$API_PID" || true
