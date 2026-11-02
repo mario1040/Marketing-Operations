@@ -102,17 +102,6 @@ async function startServer() {
     next();
   });
 
-  // One-time preservation of any pre-existing browser-local records.
-  app.post('/api/migrations/browser-cache', async (req, res) => {
-    try {
-      const result = await storage.importBrowserCache(req.body);
-      res.json(result);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Browser cache import failed';
-      res.status(400).json({ error: message });
-    }
-  });
-
   // --- WORKSPACE ENDPOINTS ---
   app.get('/api/workspaces', (_req, res) => {
     try {
