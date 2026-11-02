@@ -81,10 +81,9 @@ export const SettingsView: React.FC = () => {
       if (clean) {
         headers.set('Authorization', `Bearer ${clean}`);
       }
-      const testRes = await fetch(`${API_BASE_URL}/api/workspaces`, { headers }).catch(async () => {
-        // Fallback to same-origin proxy
-        return fetch('/api/workspaces', { headers });
-      });
+      // Use the same-origin proxy so Cloud Run and browser clients follow one
+      // consistent path and do not depend on cross-origin CORS behavior.
+      const testRes = await fetch('/api/workspaces', { headers });
 
       if (testRes.ok) {
         setTokenStatus({
@@ -466,12 +465,12 @@ export const SettingsView: React.FC = () => {
                 : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
             }`}
           >
-            {isOffline ? 'Local Storage Fallback' : 'Persistent Backend Active'}
+            {isOffline ? 'Backend Unavailable' : 'PostgreSQL Backend Active'}
           </span>
         </div>
 
         <p className="text-xs text-slate-600 leading-relaxed">
-          Operational records are written atomically to <code>/data/marketing_db.json</code> on the server with automated backups created before any schema mutation.
+          Operational records are stored in PostgreSQL in dedicated workspace, brand, content, campaign, team, and activity tables. The legacy JSON file is used only for initial data import; it is not the live production database.
         </p>
 
         <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 space-y-1">
