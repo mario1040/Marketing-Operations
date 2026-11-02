@@ -363,8 +363,11 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         });
         setIsOffline(false);
       } catch (e) {
-        console.warn('API workspace create failed, saved locally:', e);
+        console.warn('API workspace create failed; rolling back the optimistic update:', e);
+        setAllWorkspaces(allWorkspaces);
+        persistState(allWorkspaces);
         setIsOffline(true);
+        throw e;
       }
 
       // Switch to newly created workspace
@@ -399,8 +402,11 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         });
         setIsOffline(false);
       } catch (e) {
-        console.warn('API workspace update failed, saved locally:', e);
+        console.warn('API workspace update failed; rolling back the optimistic update:', e);
+        setAllWorkspaces(allWorkspaces);
+        persistState(allWorkspaces);
         setIsOffline(true);
+        throw e;
       }
 
       return updatedWs;
@@ -433,8 +439,11 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         await apiFetch(`/api/workspaces/${id}`, { method: 'DELETE' });
         setIsOffline(false);
       } catch (e) {
-        console.warn('API workspace archive failed, saved locally:', e);
+        console.warn('API workspace archive failed; rolling back the optimistic update:', e);
+        setAllWorkspaces(allWorkspaces);
+        persistState(allWorkspaces);
         setIsOffline(true);
+        throw e;
       }
 
       return true;
@@ -492,8 +501,16 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         await apiFetch(`/api/workspaces/${id}?permanent=true&cascade=${cascade}`, { method: 'DELETE' });
         setIsOffline(false);
       } catch (e) {
-        console.warn('API workspace delete failed, saved locally:', e);
+        console.warn('API workspace delete failed; rolling back the optimistic update:', e);
+        setAllWorkspaces(allWorkspaces);
+        setAllBrands(allBrands);
+        setAllContent(allContent);
+        setAllCampaigns(allCampaigns);
+        setAllTeam(allTeam);
+        setAllActivities(allActivities);
+        persistState(allWorkspaces, allBrands, allContent, allCampaigns, allTeam, allActivities);
         setIsOffline(true);
+        throw e;
       }
 
       return true;
@@ -538,7 +555,9 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           body: JSON.stringify(newBrand),
         });
       } catch (e) {
-        console.warn('API brand create failed, saved locally:', e);
+        console.warn('API brand create failed; rolling back the optimistic update:', e);
+        setAllBrands(allBrands);
+        persistState(allWorkspaces, allBrands);
         setIsOffline(true);
         throw e;
       }
@@ -573,7 +592,9 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           body: JSON.stringify(updatedBrand),
         });
       } catch (e) {
-        console.warn('API brand update failed, saved locally:', e);
+        console.warn('API brand update failed; rolling back the optimistic update:', e);
+        setAllBrands(allBrands);
+        persistState(allWorkspaces, allBrands);
         setIsOffline(true);
         throw e;
       }
@@ -602,7 +623,9 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           body: JSON.stringify({ status: 'Archived' }),
         });
       } catch (e) {
-        console.warn('API brand archive failed, saved locally:', e);
+        console.warn('API brand archive failed; rolling back the optimistic update:', e);
+        setAllBrands(allBrands);
+        persistState(allWorkspaces, allBrands);
         setIsOffline(true);
         throw e;
       }
@@ -944,7 +967,9 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           body: JSON.stringify(newCamp),
         });
       } catch (e) {
-        console.warn('API campaign creation failed, saved locally:', e);
+        console.warn('API campaign creation failed; rolling back the optimistic update:', e);
+        setAllCampaigns(allCampaigns);
+        persistState(allWorkspaces, allBrands, allContent, allCampaigns);
         setIsOffline(true);
         throw e;
       }
@@ -990,7 +1015,10 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           body: JSON.stringify(updatedCamp),
         });
       } catch (e) {
-        console.warn('API campaign update failed, saved locally:', e);
+        console.warn('API campaign update failed; rolling back the optimistic update:', e);
+        setAllCampaigns(allCampaigns);
+        setAllContent(allContent);
+        persistState(allWorkspaces, allBrands, allContent, allCampaigns);
         setIsOffline(true);
         throw e;
       }
@@ -1014,7 +1042,10 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       try {
         await apiFetch(`/api/campaigns/${id}`, { method: 'DELETE' });
       } catch (e) {
-        console.warn('API campaign delete failed, saved locally:', e);
+        console.warn('API campaign delete failed; rolling back the optimistic update:', e);
+        setAllCampaigns(allCampaigns);
+        setAllContent(allContent);
+        persistState(allWorkspaces, allBrands, allContent, allCampaigns);
         setIsOffline(true);
         throw e;
       }
@@ -1067,7 +1098,9 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           body: JSON.stringify(newMember),
         });
       } catch (e) {
-        console.warn('API team creation failed, saved locally:', e);
+        console.warn('API team creation failed; rolling back the optimistic update:', e);
+        setAllTeam(allTeam);
+        persistState(allWorkspaces, allBrands, allContent, allCampaigns, allTeam);
         setIsOffline(true);
         throw e;
       }
