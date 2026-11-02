@@ -38,6 +38,13 @@ export class PostgresStorageRepository extends StorageRepository {
 
   private async initialize(): Promise<void> {
     await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS marketing_app_migrations (
+        name TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        details JSONB NOT NULL DEFAULT '{}'::jsonb
+      )
+    `);
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS marketing_app_state (
         id TEXT PRIMARY KEY CHECK (id = 'primary'),
         payload JSONB NOT NULL,
@@ -108,6 +115,70 @@ export class PostgresStorageRepository extends StorageRepository {
        ON CONFLICT (id) DO NOTHING`,
       [snapshot]
     );
+  }
+
+
+  /**
+   * One-time import of the browser's pre-PostgreSQL cache. Browser records win
+   * on matching IDs because that cache may contain the user's latest edits.
+   * A migration marker makes repeated page loads safe and idempotent.
+   */
+  public async importBrowserCache(input: unknown): Promise<{ imported: boolean; counts?: Record<string, number> }> {
+    if (!input || typeof input !== 'object') throw new Error('Invalid browser cache payload');
+    const candidate = input as Partial<DatabaseSchema>;
+    const keys: (keyof DatabaseSchema)[] = ['workspaces', 'brands', 'content', 'campaigns', 'team', 'activities'];
+    for (const key of keys) {
+      if (!Array.isArray(candidate[key])) throw new Error(`Invalid browser cache collection: ${key}`);
+    }
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const marker = await client.query(
+        "SELECT name FROM marketing_app_migrations WHERE name = 'browser-cache-v1' FOR UPDATE"
+      );
+      if (marker.rowCount) {
+        await client.query('COMMIT');
+        return { imported: false };
+      }
+
+      const currentResult = await client.query<{ payload: DatabaseSchema }>(
+        "SELECT payload FROM marketing_app_state WHERE id = 'primary' FOR UPDATE"
+      );
+      if (!currentResult.rowCount) throw new Error('PostgreSQL state has not been initialized');
+      const current = currentResult.rows[0].payload;
+
+      const merged = {} as DatabaseSchema;
+      const counts: Record<string, number> = {};
+      for (const key of keys) {
+        const byId = new Map<string, Record<string, unknown>>();
+        for (const record of current[key] as unknown as Record<string, unknown>[]) {
+          if (typeof record?.id === 'string') byId.set(record.id, record);
+        }
+        for (const record of candidate[key] as unknown as Record<string, unknown>[]) {
+          if (typeof record?.id === 'string') byId.set(record.id, record);
+        }
+        (merged[key] as unknown as Record<string, unknown>[]) = Array.from(byId.values());
+        counts[key] = merged[key].length;
+      }
+
+      await client.query(
+        "UPDATE marketing_app_state SET payload = $1::jsonb, revision = revision + 1, updated_at = NOW() WHERE id = 'primary'",
+        [JSON.stringify(merged)]
+      );
+      await client.query(
+        "INSERT INTO marketing_app_migrations (name, details) VALUES ('browser-cache-v1', $1::jsonb)",
+        [JSON.stringify({ counts })]
+      );
+      await client.query('COMMIT');
+      this.setDatabase(merged);
+      return { imported: true, counts };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   public async flush(): Promise<void> {
