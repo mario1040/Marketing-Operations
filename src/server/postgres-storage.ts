@@ -161,62 +161,6 @@ export class PostgresStorageRepository extends StorageRepository {
       });
   }
 
-  /**
-   * One-time import of the browser's pre-PostgreSQL cache. Browser records win
-   * on matching IDs because that cache may contain the user's latest edits.
-   * The migration marker makes repeated page loads safe and idempotent.
-   */
-  public async importBrowserCache(input: unknown): Promise<{ imported: boolean; counts?: Record<string, number> }> {
-    if (!input || typeof input !== 'object') throw new Error('Invalid browser cache payload');
-    const candidate = input as Partial<DatabaseSchema>;
-    const keys = COLLECTIONS.map(collection => collection.key);
-    for (const key of keys) {
-      if (!Array.isArray(candidate[key])) throw new Error(`Invalid browser cache collection: ${key}`);
-    }
-
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query('SELECT pg_advisory_xact_lock(714202611)');
-      const marker = await client.query(
-        "SELECT name FROM marketing_app_migrations WHERE name = 'browser-cache-v1'"
-      );
-      if (marker.rowCount) {
-        await client.query('COMMIT');
-        return { imported: false };
-      }
-
-      const current = this.db;
-      const merged = {} as DatabaseSchema;
-      const counts: Record<string, number> = {};
-      for (const key of keys) {
-        const byId = new Map<string, Record<string, unknown>>();
-        for (const record of current[key] as unknown as Record<string, unknown>[]) {
-          if (typeof record?.id === 'string') byId.set(record.id, record);
-        }
-        for (const record of candidate[key] as unknown as Record<string, unknown>[]) {
-          if (typeof record?.id === 'string') byId.set(record.id, record);
-        }
-        (merged[key] as unknown as Record<string, unknown>[]) = Array.from(byId.values());
-        counts[key] = merged[key].length;
-      }
-
-      await this.writeSnapshot(client, merged);
-      await client.query(
-        "INSERT INTO marketing_app_migrations (name, details) VALUES ('browser-cache-v1', $1::jsonb)",
-        [JSON.stringify({ counts })]
-      );
-      await client.query('COMMIT');
-      this.setDatabase(merged);
-      return { imported: true, counts };
-    } catch (error) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
   public async flush(): Promise<void> {
     await this.writeQueue;
     if (this.lastWriteError) throw this.lastWriteError;
