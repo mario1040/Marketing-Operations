@@ -16,16 +16,16 @@ app.get('/api/health', async (_req, res) => {
     const upstreamRes = await fetch(`${BACKEND_API_URL}/api/health`, { method: 'GET' });
     const data = await upstreamRes.json().catch(() => null);
     res.status(upstreamRes.status).json({
-      status: 'ok',
+      status: upstreamRes.ok && data?.status === 'ok' ? 'ok' : 'degraded',
       service: 'frontend',
       backendStatus: upstreamRes.status,
       backend: data,
     });
   } catch {
-    res.status(200).json({
-      status: 'ok',
+    res.status(503).json({
+      status: 'degraded',
       service: 'frontend',
-      backend: 'external',
+      backend: 'unreachable',
     });
   }
 });
@@ -66,7 +66,8 @@ app.use('/api', async (req, res) => {
     const buffer = await response.arrayBuffer();
     res.send(Buffer.from(buffer));
   } catch (err: any) {
-    res.status(502).json({ error: 'Backend proxy unreachable', details: err?.message });
+    console.error('Backend proxy request failed:', err);
+    res.status(502).json({ error: 'Backend proxy unreachable' });
   }
 });
 

@@ -15,19 +15,24 @@ const PORT = Number(process.env.PORT) || 3000;
 async function startServer() {
   const isDev = process.env.NODE_ENV !== 'production';
 
+  // Production must use PostgreSQL exclusively. Never silently downgrade to JSON.
+  if (!isDev && !process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL is required in production; refusing to start with local JSON storage');
+  }
+  if (!isDev && (!process.env.API_TOKEN || process.env.API_TOKEN.length < 32)) {
+    throw new Error('API_TOKEN must be configured with at least 32 characters in production');
+  }
+
   let storage: StorageRepository;
   if (process.env.DATABASE_URL) {
-    try {
-      storage = await PostgresStorageRepository.connect();
-      console.log('Connected to PostgreSQL database');
-    } catch (err) {
-      console.warn('PostgreSQL connection failed, falling back to local file storage repository:', err);
-      storage = new StorageRepository();
-    }
+    // If a database URL was supplied, connection failure is always fatal.
+    storage = await PostgresStorageRepository.connect();
+    console.log('Connected to PostgreSQL database');
   } else {
-    console.log('Using local JSON file storage (data/marketing_db.json)');
+    console.warn('Using local JSON file storage for development only');
     storage = new StorageRepository();
   }
+  const isPostgres = storage instanceof PostgresStorageRepository;
 
   const app = express();
   const apiToken = process.env.API_TOKEN;
@@ -35,7 +40,7 @@ async function startServer() {
   const allowedOrigins = (process.env.CORS_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean);
   app.use(cors({
     origin: (origin, callback) => {
-      if (!origin || isDev || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      if (!origin || isDev || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
       return callback(new Error('Origin is not allowed by CORS'));
@@ -50,7 +55,12 @@ async function startServer() {
   app.get('/api/health', async (_req, res) => {
     try {
       await storage.ping();
-      res.json({ status: 'ok', database: 'connected', time: new Date().toISOString() });
+      res.json({
+        status: 'ok',
+        database: isPostgres ? 'connected' : 'not_configured',
+        storage: isPostgres ? 'postgresql' : 'local_json',
+        time: new Date().toISOString(),
+      });
     } catch {
       res.status(503).json({ status: 'error', database: 'unavailable' });
     }

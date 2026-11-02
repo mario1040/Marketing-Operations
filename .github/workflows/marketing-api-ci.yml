@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [feat/postgres-persistence]
+    branches: [main]
 
 jobs:
   build-and-postgres-smoke:
@@ -58,6 +58,12 @@ jobs:
             cat /tmp/marketing-api.log
             return 1
           }
+
+          # Production must never start without PostgreSQL configuration.
+          if env -u DATABASE_URL NODE_ENV=production API_TOKEN='ci_only_token_with_more_than_32_characters' npm run start:api; then
+            echo "API unexpectedly started without DATABASE_URL"
+            exit 1
+          fi
 
           start_api
           unauthorized_status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/data)
