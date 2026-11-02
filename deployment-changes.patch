@@ -1,0 +1,2018 @@
+commit 44b33d34be8aef05770c536000dfe0723ed4f3e0
+Author: mario1040 <mariogorgious@gmail.com>
+Date:   Mon Nov 2 12:23:17 2026 +0000
+
+    feat: Cloud Run frontend proxy, CORS fallback, and auth settings
+
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..7a550fe
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,9 @@
++# GEMINI_API_KEY: Required for Gemini AI API calls.
++# AI Studio automatically injects this at runtime from user secrets.
++# Users configure this via the Secrets panel in the AI Studio UI.
++GEMINI_API_KEY="MY_GEMINI_API_KEY"
++
++# APP_URL: The URL where this applet is hosted.
++# AI Studio automatically injects this at runtime with the Cloud Run service URL.
++# Used for self-referential links, OAuth callbacks, and API endpoints.
++APP_URL="MY_APP_URL"
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..0b4d188
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,13 @@
++node_modules/
++build/
++dist/
++coverage/
++.DS_Store
++*.log
++.env*
++!.env.example
++*.dump
++*.backup.*
++data/*.pre-postgres-*.json
++.aistudio/
++.playwright-cli/
+diff --git a/Dockerfile b/Dockerfile
+new file mode 100644
+index 0000000..a65eae1
+--- /dev/null
++++ b/Dockerfile
+@@ -0,0 +1,24 @@
++FROM node:22-alpine AS build
++WORKDIR /app
++
++ARG VITE_API_BASE_URL=https://marketing-api.bezaverse.com
++ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
++
++COPY package*.json ./
++RUN npm install
++
++COPY . .
++RUN npm run lint && npm run build && npm prune --omit=dev
++
++FROM node:22-alpine AS runtime
++WORKDIR /app
++ENV NODE_ENV=production
++ENV PORT=3000
++
++COPY --from=build /app/node_modules ./node_modules
++COPY --from=build /app/package.json ./package.json
++COPY --from=build /app/dist ./dist
++COPY --from=build /app/frontend-server.ts ./frontend-server.ts
++
++EXPOSE 3000
++CMD ["npm", "run", "start"]
+diff --git a/frontend-server.ts b/frontend-server.ts
+new file mode 100644
+index 0000000..bfc266e
+--- /dev/null
++++ b/frontend-server.ts
+@@ -0,0 +1,95 @@
++import express from 'express';
++import path from 'node:path';
++
++const app = express();
++const port = Number(process.env.PORT || 3000);
++const distPath = path.resolve(process.cwd(), 'dist');
++const BACKEND_API_URL = process.env.VITE_API_BASE_URL || 'https://marketing-api.bezaverse.com';
++
++// Health check endpoints for Cloud Run and monitoring
++app.get('/healthz', (_req, res) => {
++  res.status(200).send('OK');
++});
++
++app.get('/api/health', async (_req, res) => {
++  try {
++    const upstreamRes = await fetch(`${BACKEND_API_URL}/api/health`, { method: 'GET' });
++    const data = await upstreamRes.json().catch(() => null);
++    res.status(upstreamRes.status).json({
++      status: 'ok',
++      service: 'frontend',
++      backendStatus: upstreamRes.status,
++      backend: data,
++    });
++  } catch {
++    res.status(200).json({
++      status: 'ok',
++      service: 'frontend',
++      backend: 'external',
++    });
++  }
++});
++
++// Proxy relative /api requests to external backend (https://marketing-api.bezaverse.com)
++app.use('/api', async (req, res) => {
++  try {
++    const targetUrl = `${BACKEND_API_URL}${req.originalUrl}`;
++    const headers = new Headers();
++    for (const [key, val] of Object.entries(req.headers)) {
++      if (val && !['host', 'connection', 'content-length'].includes(key.toLowerCase())) {
++        headers.set(key, Array.isArray(val) ? val.join(', ') : val);
++      }
++    }
++
++    const fetchInit: RequestInit = {
++      method: req.method,
++      headers,
++    };
++
++    if (req.method !== 'GET' && req.method !== 'HEAD') {
++      const chunks: Buffer[] = [];
++      for await (const chunk of req) {
++        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
++      }
++      if (chunks.length > 0) {
++        fetchInit.body = Buffer.concat(chunks);
++      }
++    }
++
++    const response = await fetch(targetUrl, fetchInit);
++    res.status(response.status);
++    response.headers.forEach((val, key) => {
++      if (!['transfer-encoding', 'content-encoding'].includes(key.toLowerCase())) {
++        res.setHeader(key, val);
++      }
++    });
++    const buffer = await response.arrayBuffer();
++    res.send(Buffer.from(buffer));
++  } catch (err: any) {
++    res.status(502).json({ error: 'Backend proxy unreachable', details: err?.message });
++  }
++});
++
++// Serve frontend static assets
++app.use(express.static(distPath, {
++  index: false,
++  maxAge: '1h',
++}));
++
++// Route SPA index.html for all other routes
++app.get('*', (_req, res) => {
++  res.sendFile(path.join(distPath, 'index.html'));
++});
++
++const server = app.listen(port, '0.0.0.0', () => {
++  console.log(`Marketing Operations frontend listening on 0.0.0.0:${port}`);
++});
++
++const shutdown = () => {
++  server.close(() => {
++    process.exit(0);
++  });
++};
++
++process.once('SIGTERM', shutdown);
++process.once('SIGINT', shutdown);
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..a8041fb
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,42 @@
++{
++  "name": "react-example",
++  "private": true,
++  "version": "0.0.0",
++  "type": "module",
++  "scripts": {
++    "dev": "tsx server.ts",
++    "start": "tsx frontend-server.ts",
++    "start:api": "tsx server.ts",
++    "build": "vite build",
++    "preview": "vite preview",
++    "clean": "rm -rf dist server.js",
++    "lint": "tsc --noEmit"
++  },
++  "dependencies": {
++    "@google/genai": "^2.4.0",
++    "@tailwindcss/vite": "^4.3.3",
++    "@vitejs/plugin-react": "^6.1.1",
++    "lucide-react": "^0.546.0",
++    "react": "^19.0.1",
++    "react-dom": "^19.0.1",
++    "vite": "^8.3.0",
++    "express": "^4.21.2",
++    "dotenv": "^17.2.3",
++    "motion": "^12.23.24",
++    "pg": "^8.16.3",
++    "cors": "^2.8.5",
++    "tsx": "^4.21.0"
++  },
++  "devDependencies": {
++    "@types/node": "^22.14.0",
++    "@types/react": "^19.3.0",
++    "@types/react-dom": "^19.3.0",
++    "autoprefixer": "^10.4.21",
++    "esbuild": "^0.28.0",
++    "tailwindcss": "^4.3.3",
++    "typescript": "^7.0.2",
++    "@types/express": "^4.17.21",
++    "@types/pg": "^8.15.5",
++    "@types/cors": "^2.8.19"
++  }
++}
+\ No newline at end of file
+diff --git a/src/context/MarketingContext.tsx b/src/context/MarketingContext.tsx
+new file mode 100644
+index 0000000..1a10ef9
+--- /dev/null
++++ b/src/context/MarketingContext.tsx
+@@ -0,0 +1,1235 @@
++import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
++import {
++  Workspace,
++  Brand,
++  BrandId,
++  Campaign,
++  ContentItem,
++  ContentStatus,
++  FilterState,
++  TeamMember,
++  ActivityLog,
++  OperationalKPISummary,
++  IntegrityDiagnosticReport,
++} from '../types';
++import {
++  DEFAULT_WORKSPACE_ID,
++  INITIAL_WORKSPACES,
++  INITIAL_BRANDS,
++  INITIAL_CAMPAIGNS,
++  INITIAL_CONTENT,
++  INITIAL_TEAM,
++  INITIAL_ACTIVITIES,
++} from '../data/initialData';
++import { calculateOperationalKPIs, filterContentItems } from '../utils/metrics';
++import { checkDataIntegrity } from '../utils/dataDiagnostics';
++
++interface MarketingContextType {
++  workspaces: Workspace[];
++  activeWorkspaceId: string;
++  activeWorkspace: Workspace | null;
++  setActiveWorkspaceId: (id: string) => void;
++  createWorkspace: (data: Partial<Workspace>) => Promise<Workspace>;
++  updateWorkspace: (id: string, data: Partial<Workspace>) => Promise<Workspace>;
++  archiveWorkspace: (id: string) => Promise<boolean>;
++  deleteWorkspace: (id: string, cascade?: boolean) => Promise<boolean>;
++
++  brands: Brand[];
++  createBrand: (data: Partial<Brand>) => Promise<Brand>;
++  updateBrand: (id: string, data: Partial<Brand>) => Promise<Brand>;
++  archiveBrand: (id: string) => Promise<boolean>;
++
++  content: ContentItem[];
++  campaigns: Campaign[];
++  team: TeamMember[];
++  activities: ActivityLog[];
++
++  activeBrandId: BrandId | 'all';
++  setActiveBrandId: (brandId: BrandId | 'all') => void;
++  filters: FilterState;
++  setFilters: React.Dispatch<React.SetStateAction<FilterState>>;
++  resetFilters: () => void;
++  filteredContent: ContentItem[];
++  kpis: OperationalKPISummary;
++
++  selectedContentItem: ContentItem | null;
++  setSelectedContentItem: (item: ContentItem | null) => void;
++  isModalOpen: boolean;
++  setIsModalOpen: (open: boolean) => void;
++  modalMode: 'create' | 'edit' | 'duplicate';
++  setModalMode: (mode: 'create' | 'edit' | 'duplicate') => void;
++  openCreateModal: (defaultDate?: string, defaultBrand?: BrandId) => void;
++  openEditModal: (item: ContentItem) => void;
++  openDuplicateModal: (item: ContentItem) => void;
++  saveContentItem: (item: Partial<ContentItem>) => Promise<ContentItem>;
++  deleteContentItem: (id: string) => Promise<boolean>;
++  updateContentStatus: (id: string, newStatus: ContentStatus) => Promise<void>;
++  updateContentDate: (id: string, newDate: string) => Promise<void>;
++
++  createCampaign: (campaign: Partial<Campaign>) => Promise<Campaign>;
++  updateCampaign: (id: string, campaign: Partial<Campaign>) => Promise<Campaign>;
++  deleteCampaign: (id: string) => Promise<boolean>;
++  createTeamMember: (member: Partial<TeamMember>) => Promise<TeamMember>;
++  resetToInitialData: () => Promise<void>;
++  runIntegrityAudit: () => Promise<IntegrityDiagnosticReport>;
++
++  isLoading: boolean;
++  isOffline: boolean;
++  lastSavedAt: string | null;
++  exportToCsv: () => void;
++  exportToJson: () => void;
++}
++
++export const LOCAL_STORAGE_DB_KEY = 'marketing_ops_db_v2';
++export const LOCAL_STORAGE_ACTIVE_WS_KEY = 'marketing_ops_active_ws_v2';
++export const LOCAL_STORAGE_API_TOKEN_KEY = 'marketing_ops_api_token_v1';
++export const API_BASE_URL = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || 'https://marketing-api.bezaverse.com';
++
++export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
++  const token = localStorage.getItem(LOCAL_STORAGE_API_TOKEN_KEY);
++  const headers = new Headers(init.headers);
++  if (token) {
++    headers.set('Authorization', `Bearer ${token}`);
++  }
++
++  const isRelativeApi = typeof input === 'string' && input.startsWith('/api/');
++  const directUrl = isRelativeApi ? `${API_BASE_URL}${input}` : input;
++
++  let response: Response;
++  try {
++    response = await fetch(directUrl, { ...init, headers });
++    // If direct CORS request is blocked by backend returning 500 origin error, fallback to same-origin proxy
++    if (!response.ok && response.status === 500 && isRelativeApi) {
++      const proxyRes = await fetch(input, { ...init, headers }).catch(() => null);
++      if (proxyRes && (proxyRes.ok || proxyRes.status === 401)) {
++        response = proxyRes;
++      }
++    }
++  } catch (netErr) {
++    if (isRelativeApi) {
++      try {
++        response = await fetch(input, { ...init, headers });
++      } catch {
++        throw netErr;
++      }
++    } else {
++      throw netErr;
++    }
++  }
++
++  if (response.status === 401) {
++    window.dispatchEvent(new CustomEvent('marketing-api-unauthorized'));
++    const details = await response.json().catch(() => null) as { error?: string } | null;
++    throw new Error(details?.error || 'Unauthorized: Valid API Access Token required');
++  }
++
++  if (!response.ok) {
++    const details = await response.json().catch(() => null) as { error?: string } | null;
++    throw new Error(details?.error || `API request failed (${response.status})`);
++  }
++
++  if ((init.method || 'GET').toUpperCase() !== 'GET') {
++    window.dispatchEvent(new Event('marketing-api-saved'));
++  }
++  return response;
++}
++
++const defaultFilters: FilterState = {
++  brandId: 'all',
++  platform: 'all',
++  contentType: 'all',
++  status: 'all',
++  responsiblePerson: 'all',
++  campaignId: 'all',
++  searchQuery: '',
++  dateRange: 'all',
++};
++
++const MarketingContext = createContext<MarketingContextType | undefined>(undefined);
++
++export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
++  // All Database Collections
++  const [allWorkspaces, setAllWorkspaces] = useState<Workspace[]>(INITIAL_WORKSPACES);
++  const [allBrands, setAllBrands] = useState<Brand[]>(INITIAL_BRANDS);
++  const [allContent, setAllContent] = useState<ContentItem[]>(INITIAL_CONTENT);
++  const [allCampaigns, setAllCampaigns] = useState<Campaign[]>(INITIAL_CAMPAIGNS);
++  const [allTeam, setAllTeam] = useState<TeamMember[]>(INITIAL_TEAM);
++  const [allActivities, setAllActivities] = useState<ActivityLog[]>(INITIAL_ACTIVITIES);
++
++  // Active Workspace & Brand state
++  const [activeWorkspaceId, setActiveWorkspaceIdState] = useState<string>(() => {
++    try {
++      return localStorage.getItem(LOCAL_STORAGE_ACTIVE_WS_KEY) || DEFAULT_WORKSPACE_ID;
++    } catch {
++      return DEFAULT_WORKSPACE_ID;
++    }
++  });
++
++  const [activeBrandId, setActiveBrandId] = useState<BrandId | 'all'>('all');
++  const [filters, setFilters] = useState<FilterState>(defaultFilters);
++  const [selectedContentItem, setSelectedContentItem] = useState<ContentItem | null>(null);
++  const [isModalOpen, setIsModalOpen] = useState(false);
++  const [modalMode, setModalMode] = useState<'create' | 'edit' | 'duplicate'>('create');
++  const [isLoading, setIsLoading] = useState(true);
++  const [isOffline, setIsOffline] = useState(false);
++  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
++
++  const setActiveWorkspaceId = useCallback((id: string) => {
++    setActiveWorkspaceIdState(id);
++    setActiveBrandId('all');
++    setFilters({ ...defaultFilters, brandId: 'all' });
++    try {
++      localStorage.setItem(LOCAL_STORAGE_ACTIVE_WS_KEY, id);
++    } catch (e) {
++      console.warn('Could not persist active workspace ID:', e);
++    }
++  }, []);
++
++  useEffect(() => {
++    const handleSaved = () => {
++      setLastSavedAt(new Date().toLocaleTimeString());
++      setIsOffline(false);
++    };
++    window.addEventListener('marketing-api-saved', handleSaved);
++    return () => window.removeEventListener('marketing-api-saved', handleSaved);
++  }, []);
++
++  // Sync activeBrandId with filters
++  useEffect(() => {
++    setFilters(prev => ({ ...prev, brandId: activeBrandId }));
++  }, [activeBrandId]);
++
++  // Initial load from API or fallback localStorage
++  useEffect(() => {
++    async function loadData() {
++      setIsLoading(true);
++      try {
++        // Import the existing browser cache once before the server snapshot replaces it.
++        const browserCache = localStorage.getItem(LOCAL_STORAGE_DB_KEY);
++        if (browserCache) {
++          try {
++            await apiFetch('/api/migrations/browser-cache', {
++              method: 'POST',
++              headers: { 'Content-Type': 'application/json' },
++              body: browserCache,
++            });
++          } catch (migrationError) {
++            console.warn('Browser cache preservation was not completed:', migrationError);
++          }
++        }
++        const res = await apiFetch('/api/data');
++        if (res.ok) {
++          const data = await res.json();
++          if (data && Array.isArray(data.workspaces) && Array.isArray(data.content)) {
++            setAllWorkspaces(data.workspaces || INITIAL_WORKSPACES);
++            setAllBrands(data.brands || INITIAL_BRANDS);
++            setAllContent(data.content || INITIAL_CONTENT);
++            setAllCampaigns(data.campaigns || INITIAL_CAMPAIGNS);
++            setAllTeam(data.team || INITIAL_TEAM);
++            setAllActivities(data.activities || INITIAL_ACTIVITIES);
++            setIsOffline(false);
++            setLastSavedAt(new Date().toLocaleTimeString());
++            localStorage.setItem(LOCAL_STORAGE_DB_KEY, JSON.stringify(data));
++            setIsLoading(false);
++            return;
++          }
++        }
++      } catch (err) {
++        console.warn('Backend API unavailable, falling back to cache:', err);
++        setIsOffline(true);
++      }
++
++      // Fallback cache
++      try {
++        const cached = localStorage.getItem(LOCAL_STORAGE_DB_KEY);
++        if (cached) {
++          const parsed = JSON.parse(cached);
++          if (parsed && Array.isArray(parsed.workspaces)) {
++            setAllWorkspaces(parsed.workspaces);
++            setAllBrands(parsed.brands || INITIAL_BRANDS);
++            setAllContent(parsed.content || INITIAL_CONTENT);
++            setAllCampaigns(parsed.campaigns || INITIAL_CAMPAIGNS);
++            setAllTeam(parsed.team || INITIAL_TEAM);
++            setAllActivities(parsed.activities || INITIAL_ACTIVITIES);
++            setIsOffline(true);
++            setIsLoading(false);
++            return;
++          }
++        }
++      } catch (e) {
++        console.error('LocalStorage read error:', e);
++      }
++
++      // Default seeds
++      setAllWorkspaces(INITIAL_WORKSPACES);
++      setAllBrands(INITIAL_BRANDS);
++      setAllContent(INITIAL_CONTENT);
++      setAllCampaigns(INITIAL_CAMPAIGNS);
++      setAllTeam(INITIAL_TEAM);
++      setAllActivities(INITIAL_ACTIVITIES);
++      setIsLoading(false);
++    }
++
++    loadData();
++  }, []);
++
++  // Persist state locally to ensure zero data loss across sessions and offline resilience
++  const persistState = useCallback(
++    (
++      workspacesToSave: Workspace[],
++      brandsToSave: Brand[] = allBrands,
++      contentToSave: ContentItem[] = allContent,
++      campaignsToSave: Campaign[] = allCampaigns,
++      teamToSave: TeamMember[] = allTeam,
++      activitiesToSave: ActivityLog[] = allActivities
++    ) => {
++      try {
++        const fullPayload = {
++          workspaces: workspacesToSave,
++          brands: brandsToSave,
++          content: contentToSave,
++          campaigns: campaignsToSave,
++          team: teamToSave,
++          activities: activitiesToSave,
++        };
++        localStorage.setItem(LOCAL_STORAGE_DB_KEY, JSON.stringify(fullPayload));
++        setLastSavedAt(new Date().toLocaleTimeString());
++      } catch (e) {
++        console.warn('Could not persist state locally:', e);
++      }
++    },
++    [allBrands, allContent, allCampaigns, allTeam, allActivities]
++  );
++
++  // Active workspace object
++  const activeWorkspace =
++    allWorkspaces.find(ws => ws.id === activeWorkspaceId && ws.status !== 'Archived') ||
++    allWorkspaces[0] ||
++    null;
++
++  // Scoped collections for current active workspace
++  const currentWsId = activeWorkspace?.id || DEFAULT_WORKSPACE_ID;
++  const brands = allBrands.filter(b => b.workspaceId === currentWsId && b.status !== 'Archived');
++  const content = allContent.filter(c => c.workspaceId === currentWsId);
++  const campaigns = allCampaigns.filter(c => c.workspaceId === currentWsId);
++  const team = allTeam.filter(t => t.workspaceId === currentWsId);
++  const activities = allActivities.filter(a => a.workspaceId === currentWsId);
++
++  const resetFilters = useCallback(() => {
++    setFilters({ ...defaultFilters, brandId: activeBrandId });
++  }, [activeBrandId]);
++
++  // --- WORKSPACE ACTIONS ---
++  const createWorkspace = useCallback(
++    async (data: Partial<Workspace>): Promise<Workspace> => {
++      const now = new Date().toISOString();
++      const id = `ws-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
++      const slug = (data.name || 'new-workspace')
++        .toLowerCase()
++        .replace(/[^a-z0-9]+/g, '-')
++        .replace(/(^-|-$)/g, '');
++
++      const newWs: Workspace = {
++        id,
++        name: data.name || 'New Workspace',
++        slug,
++        description: data.description || '',
++        logo: data.logo || (data.name ? data.name[0].toUpperCase() : 'W'),
++        type: data.type || 'Company',
++        industry: data.industry || 'General Operations',
++        timezone: data.timezone || 'America/New_York',
++        defaultLanguage: data.defaultLanguage || 'en',
++        defaultCurrency: data.defaultCurrency || 'USD',
++        status: 'Active',
++        settings: {
++          calendarStartDay: data.settings?.calendarStartDay ?? 1,
++          timeFormat: data.settings?.timeFormat ?? '12h',
++          customType: data.settings?.customType,
++        },
++        createdAt: now,
++        updatedAt: now,
++        createdBy: 'Workspace Owner',
++      };
++
++      const updated = [newWs, ...allWorkspaces];
++      setAllWorkspaces(updated);
++      persistState(updated);
++
++      try {
++        await apiFetch('/api/workspaces', {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(newWs),
++        });
++        setIsOffline(false);
++      } catch (e) {
++        console.warn('API workspace create failed, saved locally:', e);
++        setIsOffline(true);
++      }
++
++      // Switch to newly created workspace
++      setActiveWorkspaceId(newWs.id);
++      return newWs;
++    },
++    [allWorkspaces, persistState, setActiveWorkspaceId]
++  );
++
++  const updateWorkspace = useCallback(
++    async (id: string, data: Partial<Workspace>): Promise<Workspace> => {
++      const idx = allWorkspaces.findIndex(ws => ws.id === id);
++      if (idx === -1) throw new Error('Workspace not found');
++
++      const updatedWs: Workspace = {
++        ...allWorkspaces[idx],
++        ...data,
++        id,
++        updatedAt: new Date().toISOString(),
++      };
++
++      const updated = [...allWorkspaces];
++      updated[idx] = updatedWs;
++      setAllWorkspaces(updated);
++      persistState(updated);
++
++      try {
++        await apiFetch(`/api/workspaces/${id}`, {
++          method: 'PUT',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(updatedWs),
++        });
++        setIsOffline(false);
++      } catch (e) {
++        console.warn('API workspace update failed, saved locally:', e);
++        setIsOffline(true);
++      }
++
++      return updatedWs;
++    },
++    [allWorkspaces, persistState]
++  );
++
++  const archiveWorkspace = useCallback(
++    async (id: string): Promise<boolean> => {
++      const activeWorkspaces = allWorkspaces.filter(ws => ws.status !== 'Archived');
++      if (activeWorkspaces.length <= 1) {
++        throw new Error('Cannot archive the only remaining active workspace');
++      }
++
++      const updated = allWorkspaces.map(ws =>
++        ws.id === id ? { ...ws, status: 'Archived' as const, updatedAt: new Date().toISOString() } : ws
++      );
++      setAllWorkspaces(updated);
++      persistState(updated);
++
++      // If active workspace was archived, switch to first remaining
++      if (activeWorkspaceId === id) {
++        const remaining = updated.find(ws => ws.id !== id && ws.status !== 'Archived');
++        if (remaining) {
++          setActiveWorkspaceId(remaining.id);
++        }
++      }
++
++      try {
++        await apiFetch(`/api/workspaces/${id}`, { method: 'DELETE' });
++        setIsOffline(false);
++      } catch (e) {
++        console.warn('API workspace archive failed, saved locally:', e);
++        setIsOffline(true);
++      }
++
++      return true;
++    },
++    [allWorkspaces, activeWorkspaceId, persistState, setActiveWorkspaceId]
++  );
++
++  const deleteWorkspace = useCallback(
++    async (id: string, cascade: boolean = true): Promise<boolean> => {
++      const activeWorkspaces = allWorkspaces.filter(ws => ws.status !== 'Archived');
++      if (activeWorkspaces.length <= 1) {
++        throw new Error('Cannot delete the only remaining active workspace');
++      }
++
++      const updatedWorkspaces = allWorkspaces.filter(ws => ws.id !== id);
++      let updatedBrands = allBrands;
++      let updatedContent = allContent;
++      let updatedCampaigns = allCampaigns;
++      let updatedTeam = allTeam;
++      let updatedActivities = allActivities;
++
++      if (cascade) {
++        updatedBrands = allBrands.filter(b => b.workspaceId !== id);
++        updatedContent = allContent.filter(c => c.workspaceId !== id);
++        updatedCampaigns = allCampaigns.filter(c => c.workspaceId !== id);
++        updatedTeam = allTeam.filter(t => t.workspaceId !== id);
++        updatedActivities = allActivities.filter(a => a.workspaceId !== id);
++      }
++
++      setAllWorkspaces(updatedWorkspaces);
++      setAllBrands(updatedBrands);
++      setAllContent(updatedContent);
++      setAllCampaigns(updatedCampaigns);
++      setAllTeam(updatedTeam);
++      setAllActivities(updatedActivities);
++
++      // If active workspace was deleted, switch to first remaining
++      if (activeWorkspaceId === id) {
++        const remaining = updatedWorkspaces.find(ws => ws.status !== 'Archived') || updatedWorkspaces[0];
++        if (remaining) {
++          setActiveWorkspaceId(remaining.id);
++        }
++      }
++
++      persistState(
++        updatedWorkspaces,
++        updatedBrands,
++        updatedContent,
++        updatedCampaigns,
++        updatedTeam,
++        updatedActivities
++      );
++
++      try {
++        await apiFetch(`/api/workspaces/${id}?permanent=true&cascade=${cascade}`, { method: 'DELETE' });
++        setIsOffline(false);
++      } catch (e) {
++        console.warn('API workspace delete failed, saved locally:', e);
++        setIsOffline(true);
++      }
++
++      return true;
++    },
++    [allWorkspaces, allBrands, allContent, allCampaigns, allTeam, allActivities, activeWorkspaceId, persistState, setActiveWorkspaceId]
++  );
++
++  // --- BRAND ACTIONS ---
++  const createBrand = useCallback(
++    async (brandData: Partial<Brand>): Promise<Brand> => {
++      const now = new Date().toISOString();
++      const id = brandData.id || `brd-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
++      const code = (brandData.code || brandData.name?.substring(0, 4) || 'BRD').toUpperCase();
++
++      const newBrand: Brand = {
++        id,
++        workspaceId: currentWsId,
++        name: brandData.name || 'New Brand',
++        code,
++        tagline: brandData.tagline || '',
++        primaryColor: brandData.primaryColor || '#4F46E5',
++        badgeBg: brandData.badgeBg || 'bg-indigo-50',
++        badgeText: brandData.badgeText || 'text-indigo-700',
++        badgeBorder: brandData.badgeBorder || 'border-indigo-200',
++        description: brandData.description || '',
++        industry: brandData.industry,
++        website: brandData.website,
++        defaultPlatforms: brandData.defaultPlatforms || ['LinkedIn', 'YouTube'],
++        status: 'Active',
++        createdAt: now,
++        updatedAt: now,
++      };
++
++      const updated = [...allBrands, newBrand];
++      setAllBrands(updated);
++      persistState(allWorkspaces, updated);
++
++      try {
++        await apiFetch(`/api/workspaces/${currentWsId}/brands`, {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(newBrand),
++        });
++      } catch (e) {
++        console.warn('API brand create failed, saved locally:', e);
++        setIsOffline(true);
++        throw e;
++      }
++
++      return newBrand;
++    },
++    [currentWsId, allBrands, allWorkspaces, persistState]
++  );
++
++  const updateBrand = useCallback(
++    async (id: string, data: Partial<Brand>): Promise<Brand> => {
++      const idx = allBrands.findIndex(b => b.id === id);
++      if (idx === -1) throw new Error('Brand not found');
++
++      const updatedBrand: Brand = {
++        ...allBrands[idx],
++        ...data,
++        id,
++        workspaceId: allBrands[idx].workspaceId,
++        updatedAt: new Date().toISOString(),
++      };
++
++      const updated = [...allBrands];
++      updated[idx] = updatedBrand;
++      setAllBrands(updated);
++      persistState(allWorkspaces, updated);
++
++      try {
++        await apiFetch(`/api/brands/${id}`, {
++          method: 'PUT',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(updatedBrand),
++        });
++      } catch (e) {
++        console.warn('API brand update failed, saved locally:', e);
++        setIsOffline(true);
++        throw e;
++      }
++
++      return updatedBrand;
++    },
++    [allBrands, allWorkspaces, persistState]
++  );
++
++  const archiveBrand = useCallback(
++    async (id: string): Promise<boolean> => {
++      const updated = allBrands.map(b =>
++        b.id === id ? { ...b, status: 'Archived' as const, updatedAt: new Date().toISOString() } : b
++      );
++      setAllBrands(updated);
++      persistState(allWorkspaces, updated);
++
++      if (activeBrandId === id) {
++        setActiveBrandId('all');
++      }
++
++      try {
++        await apiFetch(`/api/brands/${id}`, {
++          method: 'PUT',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify({ status: 'Archived' }),
++        });
++      } catch (e) {
++        console.warn('API brand archive failed, saved locally:', e);
++        setIsOffline(true);
++        throw e;
++      }
++
++      return true;
++    },
++    [allBrands, allWorkspaces, activeBrandId, persistState]
++  );
++
++  // --- CONTENT MODAL & CRUD ---
++  const openCreateModal = useCallback(
++    (defaultDate?: string, defaultBrand?: BrandId) => {
++      const now = new Date();
++      const dateStr = defaultDate || now.toISOString().split('T')[0];
++      const targetBrand: BrandId =
++        defaultBrand ||
++        (activeBrandId !== 'all' ? activeBrandId : brands[0]?.id || 'the-professor');
++
++      const newItem: ContentItem = {
++        id: '',
++        workspaceId: currentWsId,
++        brandId: targetBrand,
++        contentDate: dateStr,
++        scheduledPublishingDate: dateStr,
++        publishingTime: '10:00 AM',
++        platform: 'LinkedIn',
++        contentType: 'Static Post',
++        topic: '',
++        objective: 'Brand Awareness',
++        responsiblePerson: team[0]?.name || 'Marketing Lead',
++        status: 'Planned',
++        caption: '',
++        cta: '',
++        contentBrief: '',
++        creativeUrl: '',
++        internalNotes: '',
++        approvalNotes: '',
++        createdAt: new Date().toISOString(),
++        updatedAt: new Date().toISOString(),
++        createdBy: team[0]?.name || 'Marketing Ops',
++      };
++
++      setSelectedContentItem(newItem);
++      setModalMode('create');
++      setIsModalOpen(true);
++    },
++    [currentWsId, activeBrandId, brands, team]
++  );
++
++  const openEditModal = useCallback((item: ContentItem) => {
++    setSelectedContentItem(item);
++    setModalMode('edit');
++    setIsModalOpen(true);
++  }, []);
++
++  const openDuplicateModal = useCallback(
++    (item: ContentItem) => {
++      const duplicated: ContentItem = {
++        ...item,
++        id: '',
++        workspaceId: currentWsId,
++        topic: `${item.topic} (Copy)`,
++        status: 'Planned',
++        createdAt: new Date().toISOString(),
++        updatedAt: new Date().toISOString(),
++        actualPublishedUrl: undefined,
++        publishedAt: undefined,
++      };
++      setSelectedContentItem(duplicated);
++      setModalMode('duplicate');
++      setIsModalOpen(true);
++    },
++    [currentWsId]
++  );
++
++  const saveContentItem = useCallback(
++    async (itemData: Partial<ContentItem>): Promise<ContentItem> => {
++      const now = new Date().toISOString();
++      let savedItem: ContentItem;
++
++      if (modalMode === 'edit' && itemData.id) {
++        const index = allContent.findIndex(c => c.id === itemData.id);
++        const prev = index >= 0 ? allContent[index] : itemData;
++        savedItem = {
++          ...(prev as ContentItem),
++          ...itemData,
++          workspaceId: currentWsId,
++          updatedAt: now,
++        } as ContentItem;
++
++        const updatedList = [...allContent];
++        if (index >= 0) {
++          updatedList[index] = savedItem;
++        } else {
++          updatedList.unshift(savedItem);
++        }
++
++        const changes: string[] = [];
++        if (prev && (prev as ContentItem).status !== savedItem.status) {
++          changes.push(`status updated to ${savedItem.status}`);
++        }
++        if (prev && (prev as ContentItem).scheduledPublishingDate !== savedItem.scheduledPublishingDate) {
++          changes.push(`scheduled date moved to ${savedItem.scheduledPublishingDate}`);
++        }
++
++        const newLog: ActivityLog = {
++          id: `act-${Date.now().toString(36)}`,
++          workspaceId: currentWsId,
++          contentId: savedItem.id,
++          contentTopic: savedItem.topic,
++          brandId: savedItem.brandId,
++          action: changes.length > 0 ? changes.join(', ') : 'Content details updated',
++          user: savedItem.responsiblePerson || 'Team Member',
++          timestamp: now,
++        };
++
++        const updatedActivities = [newLog, ...allActivities];
++        setAllContent(updatedList);
++        setAllActivities(updatedActivities);
++        persistState(allWorkspaces, allBrands, updatedList, allCampaigns, allTeam, updatedActivities);
++
++        try {
++          await apiFetch(`/api/content/${savedItem.id}`, {
++            method: 'PUT',
++            headers: { 'Content-Type': 'application/json' },
++            body: JSON.stringify(savedItem),
++          });
++        } catch (e) {
++          console.warn('API update failed, state persisted locally:', e);
++        setIsOffline(true);
++        throw e;
++        }
++      } else {
++        const newId = `cnt-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
++        savedItem = {
++          ...itemData,
++          id: newId,
++          workspaceId: currentWsId,
++          createdAt: now,
++          updatedAt: now,
++        } as ContentItem;
++
++        const updatedList = [savedItem, ...allContent];
++        const newLog: ActivityLog = {
++          id: `act-${Date.now().toString(36)}`,
++          workspaceId: currentWsId,
++          contentId: savedItem.id,
++          contentTopic: savedItem.topic,
++          brandId: savedItem.brandId,
++          action: `Content created with status "${savedItem.status}"`,
++          user: savedItem.responsiblePerson || 'Marketing Ops',
++          timestamp: now,
++        };
++
++        const updatedActivities = [newLog, ...allActivities];
++        setAllContent(updatedList);
++        setAllActivities(updatedActivities);
++        persistState(allWorkspaces, allBrands, updatedList, allCampaigns, allTeam, updatedActivities);
++
++        try {
++          await apiFetch(`/api/workspaces/${currentWsId}/content`, {
++            method: 'POST',
++            headers: { 'Content-Type': 'application/json' },
++            body: JSON.stringify(savedItem),
++          });
++        } catch (e) {
++          console.warn('API create failed, state persisted locally:', e);
++        setIsOffline(true);
++        throw e;
++        }
++      }
++
++      setIsModalOpen(false);
++      return savedItem;
++    },
++    [modalMode, currentWsId, allContent, allActivities, allWorkspaces, allBrands, allCampaigns, allTeam, persistState]
++  );
++
++  const deleteContentItem = useCallback(
++    async (id: string): Promise<boolean> => {
++      const itemToDelete = allContent.find(c => c.id === id);
++      if (!itemToDelete) return false;
++
++      const updatedList = allContent.filter(c => c.id !== id);
++      const newLog: ActivityLog = {
++        id: `act-${Date.now().toString(36)}`,
++        workspaceId: currentWsId,
++        contentId: id,
++        contentTopic: itemToDelete.topic,
++        brandId: itemToDelete.brandId,
++        action: `Content item "${itemToDelete.topic}" deleted`,
++        user: 'Marketing Ops',
++        timestamp: new Date().toISOString(),
++      };
++
++      const updatedActivities = [newLog, ...allActivities];
++      setAllContent(updatedList);
++      setAllActivities(updatedActivities);
++      persistState(allWorkspaces, allBrands, updatedList, allCampaigns, allTeam, updatedActivities);
++
++      try {
++        await apiFetch(`/api/content/${id}`, { method: 'DELETE' });
++      } catch (e) {
++        console.warn('API delete failed, synced locally:', e);
++        setIsOffline(true);
++        throw e;
++      }
++
++      setIsModalOpen(false);
++      return true;
++    },
++    [allContent, allActivities, currentWsId, allWorkspaces, allBrands, allCampaigns, allTeam, persistState]
++  );
++
++  const updateContentStatus = useCallback(
++    async (id: string, newStatus: ContentStatus) => {
++      const item = allContent.find(c => c.id === id);
++      if (!item || item.status === newStatus) return;
++
++      const prevStatus = item.status;
++      const now = new Date().toISOString();
++      const updatedItem: ContentItem = {
++        ...item,
++        status: newStatus,
++        updatedAt: now,
++        publishedAt: newStatus === 'Published' && !item.publishedAt ? now : item.publishedAt,
++      };
++
++      const updatedList = allContent.map(c => (c.id === id ? updatedItem : c));
++      const newLog: ActivityLog = {
++        id: `act-${Date.now().toString(36)}`,
++        workspaceId: item.workspaceId,
++        contentId: id,
++        contentTopic: item.topic,
++        brandId: item.brandId,
++        action: `Status transitioned from ${prevStatus} to ${newStatus}`,
++        previousValue: prevStatus,
++        newValue: newStatus,
++        user: item.responsiblePerson || 'Team Member',
++        timestamp: now,
++      };
++
++      const updatedActivities = [newLog, ...allActivities];
++      setAllContent(updatedList);
++      setAllActivities(updatedActivities);
++      persistState(allWorkspaces, allBrands, updatedList, allCampaigns, allTeam, updatedActivities);
++
++      try {
++        await apiFetch(`/api/content/${id}`, {
++          method: 'PUT',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(updatedItem),
++        });
++      } catch (e) {
++        console.warn('API status update failed, synced locally:', e);
++        setIsOffline(true);
++        throw e;
++      }
++    },
++    [allContent, allActivities, allWorkspaces, allBrands, allCampaigns, allTeam, persistState]
++  );
++
++  const updateContentDate = useCallback(
++    async (id: string, newDate: string) => {
++      const item = allContent.find(c => c.id === id);
++      if (!item || item.scheduledPublishingDate === newDate) return;
++
++      const prevDate = item.scheduledPublishingDate;
++      const now = new Date().toISOString();
++      const updatedItem: ContentItem = {
++        ...item,
++        scheduledPublishingDate: newDate,
++        updatedAt: now,
++      };
++
++      const updatedList = allContent.map(c => (c.id === id ? updatedItem : c));
++      const newLog: ActivityLog = {
++        id: `act-${Date.now().toString(36)}`,
++        workspaceId: item.workspaceId,
++        contentId: id,
++        contentTopic: item.topic,
++        brandId: item.brandId,
++        action: `Rescheduled from ${prevDate} to ${newDate}`,
++        previousValue: prevDate,
++        newValue: newDate,
++        user: item.responsiblePerson || 'Team Member',
++        timestamp: now,
++      };
++
++      const updatedActivities = [newLog, ...allActivities];
++      setAllContent(updatedList);
++      setAllActivities(updatedActivities);
++      persistState(allWorkspaces, allBrands, updatedList, allCampaigns, allTeam, updatedActivities);
++
++      try {
++        await apiFetch(`/api/content/${id}`, {
++          method: 'PUT',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(updatedItem),
++        });
++      } catch (e) {
++        console.warn('API date update failed, synced locally:', e);
++        setIsOffline(true);
++        throw e;
++      }
++    },
++    [allContent, allActivities, allWorkspaces, allBrands, allCampaigns, allTeam, persistState]
++  );
++
++  const createCampaign = useCallback(
++    async (campaignData: Partial<Campaign>): Promise<Campaign> => {
++      // Validate brand belongs to current workspace
++      const targetBrandId = campaignData.brandId && brands.some(b => b.id === campaignData.brandId)
++        ? campaignData.brandId
++        : (brands[0]?.id || 'the-professor');
++
++      const newCamp: Campaign = {
++        id: `cmp-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
++        workspaceId: currentWsId,
++        brandId: targetBrandId,
++        name: campaignData.name || 'Untitled Campaign',
++        objective: campaignData.objective || 'Brand Awareness',
++        startDate: campaignData.startDate || new Date().toISOString().split('T')[0],
++        endDate: campaignData.endDate || new Date().toISOString().split('T')[0],
++        description: campaignData.description || '',
++        status: campaignData.status || 'Active',
++        createdAt: new Date().toISOString(),
++        updatedAt: new Date().toISOString(),
++      };
++
++      const updated = [newCamp, ...allCampaigns];
++      setAllCampaigns(updated);
++      persistState(allWorkspaces, allBrands, allContent, updated);
++
++      try {
++        await apiFetch(`/api/workspaces/${currentWsId}/campaigns`, {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(newCamp),
++        });
++      } catch (e) {
++        console.warn('API campaign creation failed, saved locally:', e);
++        setIsOffline(true);
++        throw e;
++      }
++
++      return newCamp;
++    },
++    [currentWsId, brands, allCampaigns, allWorkspaces, allBrands, allContent, persistState]
++  );
++
++  const updateCampaign = useCallback(
++    async (id: string, campaignData: Partial<Campaign>): Promise<Campaign> => {
++      const idx = allCampaigns.findIndex(c => c.id === id);
++      if (idx === -1) throw new Error(`Campaign ${id} not found`);
++
++      const prev = allCampaigns[idx];
++      const updatedCamp: Campaign = {
++        ...prev,
++        ...campaignData,
++        id,
++        workspaceId: prev.workspaceId,
++        updatedAt: new Date().toISOString(),
++      };
++
++      const updatedCampaigns = [...allCampaigns];
++      updatedCampaigns[idx] = updatedCamp;
++
++      // If campaign brand changed, re-align any existing content items referencing this campaign
++      let updatedContent = allContent;
++      if (campaignData.brandId && campaignData.brandId !== prev.brandId) {
++        updatedContent = allContent.map(item =>
++          item.campaignId === id ? { ...item, brandId: campaignData.brandId!, updatedAt: new Date().toISOString() } : item
++        );
++        setAllContent(updatedContent);
++      }
++
++      setAllCampaigns(updatedCampaigns);
++      persistState(allWorkspaces, allBrands, updatedContent, updatedCampaigns);
++
++      try {
++        await apiFetch(`/api/campaigns/${id}`, {
++          method: 'PUT',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(updatedCamp),
++        });
++      } catch (e) {
++        console.warn('API campaign update failed, saved locally:', e);
++        setIsOffline(true);
++        throw e;
++      }
++
++      return updatedCamp;
++    },
++    [allCampaigns, allContent, allWorkspaces, allBrands, persistState]
++  );
++
++  const deleteCampaign = useCallback(
++    async (id: string): Promise<boolean> => {
++      const updatedCampaigns = allCampaigns.filter(c => c.id !== id);
++      const updatedContent = allContent.map(item =>
++        item.campaignId === id ? { ...item, campaignId: undefined, updatedAt: new Date().toISOString() } : item
++      );
++
++      setAllCampaigns(updatedCampaigns);
++      setAllContent(updatedContent);
++      persistState(allWorkspaces, allBrands, updatedContent, updatedCampaigns);
++
++      try {
++        await apiFetch(`/api/campaigns/${id}`, { method: 'DELETE' });
++      } catch (e) {
++        console.warn('API campaign delete failed, saved locally:', e);
++        setIsOffline(true);
++        throw e;
++      }
++
++      return true;
++    },
++    [allCampaigns, allContent, allWorkspaces, allBrands, persistState]
++  );
++
++  const runIntegrityAudit = useCallback(async (): Promise<IntegrityDiagnosticReport> => {
++    try {
++      const res = await apiFetch('/api/diagnostics/integrity');
++      if (res.ok) {
++        return await res.json();
++      }
++    } catch (e) {
++      console.warn('API diagnostics failed, checking local state:', e);
++    }
++
++    return checkDataIntegrity({
++      workspaces: allWorkspaces,
++      brands: allBrands,
++      content: allContent,
++      campaigns: allCampaigns,
++      team: allTeam,
++      activities: allActivities,
++    });
++  }, [allWorkspaces, allBrands, allContent, allCampaigns, allTeam, allActivities]);
++
++  const createTeamMember = useCallback(
++    async (memberData: Partial<TeamMember>): Promise<TeamMember> => {
++      const newMember: TeamMember = {
++        id: `tm-${Date.now().toString(36)}`,
++        workspaceId: currentWsId,
++        name: memberData.name || 'New Member',
++        role: memberData.role || 'Content Contributor',
++        email: memberData.email || 'contributor@brand.io',
++        avatarBg: memberData.avatarBg || 'bg-slate-600',
++        brands: memberData.brands || (brands.length > 0 ? [brands[0].id] : []),
++      };
++
++      const updated = [...allTeam, newMember];
++      setAllTeam(updated);
++      persistState(allWorkspaces, allBrands, allContent, allCampaigns, updated);
++
++      try {
++        await apiFetch(`/api/workspaces/${currentWsId}/team`, {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(newMember),
++        });
++      } catch (e) {
++        console.warn('API team creation failed, saved locally:', e);
++        setIsOffline(true);
++        throw e;
++      }
++
++      return newMember;
++    },
++    [currentWsId, brands, allTeam, allWorkspaces, allBrands, allContent, allCampaigns, persistState]
++  );
++
++  const resetToInitialData = useCallback(async () => {
++    await apiFetch('/api/reset-data', { method: 'POST' });
++    setAllWorkspaces(INITIAL_WORKSPACES);
++    setAllBrands(INITIAL_BRANDS);
++    setAllContent(INITIAL_CONTENT);
++    setAllCampaigns(INITIAL_CAMPAIGNS);
++    setAllTeam(INITIAL_TEAM);
++    setAllActivities(INITIAL_ACTIVITIES);
++    setActiveWorkspaceId(DEFAULT_WORKSPACE_ID);
++    localStorage.removeItem(LOCAL_STORAGE_DB_KEY);
++  }, [setActiveWorkspaceId]);
++
++  // Filtered items based on active filters in current workspace
++  const filteredContent = filterContentItems(content, filters);
++
++  // Overall KPIs for current brand selection in workspace
++  const brandScopeItems = activeBrandId === 'all' ? content : content.filter(c => c.brandId === activeBrandId);
++  const kpis = calculateOperationalKPIs(brandScopeItems);
++
++  // Export to CSV
++  const exportToCsv = useCallback(() => {
++    const headers = [
++      'Workspace',
++      'Content ID',
++      'Brand',
++      'Scheduled Date',
++      'Publishing Time',
++      'Platform',
++      'Content Type',
++      'Topic / Title',
++      'Status',
++      'Responsible Person',
++      'Objective',
++      'Campaign',
++      'CTA',
++      'Published URL',
++    ];
++
++    const rows = filteredContent.map(item => {
++      const itemBrand = brands.find(b => b.id === item.brandId);
++      return [
++        `"${activeWorkspace?.name || 'Workspace'}"`,
++        `"${item.id}"`,
++        `"${itemBrand ? itemBrand.name : item.brandId}"`,
++        `"${item.scheduledPublishingDate}"`,
++        `"${item.publishingTime || ''}"`,
++        `"${item.platform}"`,
++        `"${item.contentType}"`,
++        `"${(item.topic || '').replace(/"/g, '""')}"`,
++        `"${item.status}"`,
++        `"${item.responsiblePerson}"`,
++        `"${item.objective}"`,
++        `"${item.campaignId || ''}"`,
++        `"${(item.cta || '').replace(/"/g, '""')}"`,
++        `"${item.actualPublishedUrl || ''}"`,
++      ];
++    });
++
++    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
++    const encodedUri = encodeURI(csvContent);
++    const link = document.createElement('a');
++    link.setAttribute('href', encodedUri);
++    link.setAttribute('download', `${activeWorkspace?.slug || 'workspace'}_export_${new Date().toISOString().split('T')[0]}.csv`);
++    document.body.appendChild(link);
++    link.click();
++    document.body.removeChild(link);
++  }, [filteredContent, brands, activeWorkspace]);
++
++  // Export to JSON
++  const exportToJson = useCallback(() => {
++    const payload = {
++      workspace: activeWorkspace,
++      brands,
++      content: filteredContent,
++      campaigns,
++      team,
++    };
++    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
++    const link = document.createElement('a');
++    link.setAttribute('href', dataStr);
++    link.setAttribute('download', `${activeWorkspace?.slug || 'workspace'}_backup_${new Date().toISOString().split('T')[0]}.json`);
++    document.body.appendChild(link);
++    link.click();
++    document.body.removeChild(link);
++  }, [activeWorkspace, brands, filteredContent, campaigns, team]);
++
++  return (
++    <MarketingContext.Provider
++      value={{
++        workspaces: allWorkspaces.filter(ws => ws.status !== 'Archived'),
++        activeWorkspaceId: currentWsId,
++        activeWorkspace,
++        setActiveWorkspaceId,
++        createWorkspace,
++        updateWorkspace,
++        archiveWorkspace,
++        deleteWorkspace,
++
++        brands,
++        createBrand,
++        updateBrand,
++        archiveBrand,
++
++        content,
++        campaigns,
++        team,
++        activities,
++
++        activeBrandId,
++        setActiveBrandId,
++        filters,
++        setFilters,
++        resetFilters,
++        filteredContent,
++        kpis,
++
++        selectedContentItem,
++        setSelectedContentItem,
++        isModalOpen,
++        setIsModalOpen,
++        modalMode,
++        setModalMode,
++        openCreateModal,
++        openEditModal,
++        openDuplicateModal,
++        saveContentItem,
++        deleteContentItem,
++        updateContentStatus,
++        updateContentDate,
++
++        createCampaign,
++        updateCampaign,
++        deleteCampaign,
++        createTeamMember,
++        resetToInitialData,
++        runIntegrityAudit,
++
++        isLoading,
++        isOffline,
++        lastSavedAt,
++        exportToCsv,
++        exportToJson,
++      }}
++    >
++      {children}
++    </MarketingContext.Provider>
++  );
++};
++
++export const useMarketing = () => {
++  const context = useContext(MarketingContext);
++  if (!context) {
++    throw new Error('useMarketing must be used within a MarketingProvider');
++  }
++  return context;
++};
+diff --git a/src/views/SettingsView.tsx b/src/views/SettingsView.tsx
+new file mode 100644
+index 0000000..abf71b4
+--- /dev/null
++++ b/src/views/SettingsView.tsx
+@@ -0,0 +1,551 @@
++import React, { useState } from 'react';
++import { useMarketing, LOCAL_STORAGE_API_TOKEN_KEY, API_BASE_URL } from '../context/MarketingContext';
++import {
++  Settings,
++  Database,
++  RefreshCw,
++  Download,
++  ShieldCheck,
++  AlertTriangle,
++  Award,
++  Cpu,
++  BookOpen,
++  CheckCircle2,
++  Trash2,
++  Layers,
++  Wrench,
++  Search,
++  Key,
++  Globe,
++  Lock,
++  Eye,
++  EyeOff,
++  Check,
++} from 'lucide-react';
++import { IntegrityDiagnosticReport } from '../types';
++
++export const SettingsView: React.FC = () => {
++  const {
++    brands,
++    content,
++    campaigns,
++    team,
++    activeWorkspace,
++    resetToInitialData,
++    runIntegrityAudit,
++    lastSavedAt,
++    isOffline,
++    exportToJson,
++  } = useMarketing();
++
++  const [isResetting, setIsResetting] = useState(false);
++  const [resetMessage, setResetMessage] = useState<string | null>(null);
++  const [showResetModal, setShowResetModal] = useState(false);
++
++  const [isRunningAudit, setIsRunningAudit] = useState(false);
++  const [diagnosticReport, setDiagnosticReport] = useState<IntegrityDiagnosticReport | null>(null);
++  const [repairMessage, setRepairMessage] = useState<string | null>(null);
++  const [isRepairing, setIsRepairing] = useState(false);
++
++  // API Token State
++  const [tokenInput, setTokenInput] = useState(() => {
++    try {
++      return localStorage.getItem(LOCAL_STORAGE_API_TOKEN_KEY) || '';
++    } catch {
++      return '';
++    }
++  });
++  const [showToken, setShowToken] = useState(false);
++  const [tokenStatus, setTokenStatus] = useState<{
++    type: 'idle' | 'testing' | 'valid' | 'invalid' | 'saved';
++    message?: string;
++  }>({ type: 'idle' });
++
++  const handleSaveToken = () => {
++    const clean = tokenInput.trim();
++    if (clean) {
++      localStorage.setItem(LOCAL_STORAGE_API_TOKEN_KEY, clean);
++      setTokenStatus({ type: 'saved', message: 'Token saved to browser localStorage.' });
++    } else {
++      localStorage.removeItem(LOCAL_STORAGE_API_TOKEN_KEY);
++      setTokenStatus({ type: 'saved', message: 'Token cleared from browser.' });
++    }
++    setTimeout(() => setTokenStatus(prev => prev.type === 'saved' ? { type: 'idle' } : prev), 3000);
++  };
++
++  const handleTestToken = async () => {
++    setTokenStatus({ type: 'testing', message: 'Verifying with https://marketing-api.bezaverse.com...' });
++    const clean = tokenInput.trim();
++    try {
++      const headers = new Headers();
++      if (clean) {
++        headers.set('Authorization', `Bearer ${clean}`);
++      }
++      const testRes = await fetch(`${API_BASE_URL}/api/workspaces`, { headers }).catch(async () => {
++        // Fallback to same-origin proxy
++        return fetch('/api/workspaces', { headers });
++      });
++
++      if (testRes.ok) {
++        setTokenStatus({
++          type: 'valid',
++          message: 'Connection successful! Authenticated with backend database (HTTP 200).',
++        });
++      } else if (testRes.status === 401) {
++        setTokenStatus({
++          type: 'invalid',
++          message: 'Unauthorized (HTTP 401): The provided API token does not match the backend secret.',
++        });
++      } else {
++        setTokenStatus({
++          type: 'invalid',
++          message: `Backend returned HTTP ${testRes.status}. Check API status.`,
++        });
++      }
++    } catch (err: any) {
++      setTokenStatus({
++        type: 'invalid',
++        message: `Network error reaching backend: ${err?.message || 'Check connection'}`,
++      });
++    }
++  };
++
++  const handleRunAudit = async () => {
++    setIsRunningAudit(true);
++    setRepairMessage(null);
++    try {
++      const rep = await runIntegrityAudit();
++      setDiagnosticReport(rep);
++    } catch (e) {
++      console.error('Audit run failed:', e);
++    } finally {
++      setIsRunningAudit(false);
++    }
++  };
++
++  const handleRunSafeRepair = async () => {
++    setIsRepairing(true);
++    try {
++      const res = await fetch('/api/diagnostics/repair', { method: 'POST' });
++      if (res.ok) {
++        const data = await res.json();
++        setRepairMessage(`Repaired ${data.repaired} reference(s). Database is in pristine integrity.`);
++        // Re-run audit
++        const rep = await runIntegrityAudit();
++        setDiagnosticReport(rep);
++      }
++    } catch (e) {
++      console.error('Repair failed:', e);
++    } finally {
++      setIsRepairing(false);
++    }
++  };
++
++  const confirmReset = async () => {
++    setShowResetModal(false);
++    setIsResetting(true);
++    try {
++      await resetToInitialData();
++      setResetMessage('Database successfully reset to initial seeds.');
++      setTimeout(() => setResetMessage(null), 3000);
++    } catch (err) {
++      console.error('Reset failed:', err);
++    } finally {
++      setIsResetting(false);
++    }
++  };
++
++  return (
++    <div className="space-y-6 max-w-5xl">
++      {/* Top Header */}
++      <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-2xs">
++        <h3 className="text-base font-bold text-slate-900 tracking-tight">
++          System Settings &amp; Platform Architecture
++        </h3>
++        <p className="text-xs text-slate-500">
++          Multi-workspace tenant configuration, relational integrity diagnostics, and storage persistence
++        </p>
++      </div>
++
++      {resetMessage && (
++        <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold flex items-center gap-2">
++          <CheckCircle2 size={16} />
++          <span>{resetMessage}</span>
++        </div>
++      )}
++
++      {/* SECTION 1: RELATIONAL DATA INTEGRITY DIAGNOSTIC TOOL */}
++      <div className="bg-white rounded-xl border border-slate-200/80 p-5 shadow-2xs space-y-4">
++        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
++          <div className="flex items-center gap-2.5">
++            <span className="p-2 rounded-lg bg-indigo-50 text-indigo-600">
++              <ShieldCheck size={18} />
++            </span>
++            <div>
++              <h4 className="text-sm font-bold text-slate-900">
++                Referential Integrity &amp; Diagnostic Tool
++              </h4>
++              <p className="text-xs text-slate-500">
++                Audits all Platform → Workspace → Brand → Operational records for invalid foreign keys, orphans, or cross-tenant leaks.
++              </p>
++            </div>
++          </div>
++
++          <button
++            type="button"
++            onClick={handleRunAudit}
++            disabled={isRunningAudit}
++            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-2xs transition-colors cursor-pointer"
++          >
++            <Search size={14} className={isRunningAudit ? 'animate-spin' : ''} />
++            <span>{isRunningAudit ? 'Auditing Platform...' : 'Run Integrity Audit'}</span>
++          </button>
++        </div>
++
++        {repairMessage && (
++          <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-semibold flex items-center gap-2">
++            <CheckCircle2 size={15} />
++            <span>{repairMessage}</span>
++          </div>
++        )}
++
++        {diagnosticReport ? (
++          <div className="space-y-4">
++            <div className={`p-4 rounded-xl border flex items-center justify-between ${
++              diagnosticReport.healthy
++                ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
++                : 'bg-amber-50 border-amber-200 text-amber-900'
++            }`}>
++              <div className="flex items-center gap-3">
++                {diagnosticReport.healthy ? (
++                  <CheckCircle2 size={20} className="text-emerald-600 shrink-0" />
++                ) : (
++                  <AlertTriangle size={20} className="text-amber-600 shrink-0" />
++                )}
++                <div>
++                  <h5 className="text-xs font-bold">
++                    {diagnosticReport.healthy ? '100% Relational Integrity Verified' : 'Attention: Integrity Anomaly Detected'}
++                  </h5>
++                  <p className="text-[11px] opacity-90">{diagnosticReport.summary}</p>
++                </div>
++              </div>
++
++              {!diagnosticReport.healthy && (
++                <button
++                  type="button"
++                  onClick={handleRunSafeRepair}
++                  disabled={isRepairing}
++                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-700 hover:bg-amber-800 rounded-lg shadow-2xs cursor-pointer shrink-0"
++                >
++                  <Wrench size={13} />
++                  <span>{isRepairing ? 'Repairing...' : 'Run Safe Auto-Repair'}</span>
++                </button>
++              )}
++            </div>
++
++            {/* Total Records Inspected */}
++            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
++              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-center">
++                <span className="text-[10px] font-bold text-slate-400 uppercase block">Workspaces</span>
++                <span className="text-base font-bold text-slate-800">{diagnosticReport.totalRecordsChecked.workspaces}</span>
++              </div>
++              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-center">
++                <span className="text-[10px] font-bold text-slate-400 uppercase block">Brands</span>
++                <span className="text-base font-bold text-slate-800">{diagnosticReport.totalRecordsChecked.brands}</span>
++              </div>
++              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-center">
++                <span className="text-[10px] font-bold text-slate-400 uppercase block">Campaigns</span>
++                <span className="text-base font-bold text-slate-800">{diagnosticReport.totalRecordsChecked.campaigns}</span>
++              </div>
++              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-center">
++                <span className="text-[10px] font-bold text-slate-400 uppercase block">Content</span>
++                <span className="text-base font-bold text-slate-800">{diagnosticReport.totalRecordsChecked.content}</span>
++              </div>
++              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-center">
++                <span className="text-[10px] font-bold text-slate-400 uppercase block">Team</span>
++                <span className="text-base font-bold text-slate-800">{diagnosticReport.totalRecordsChecked.team}</span>
++              </div>
++              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-center">
++                <span className="text-[10px] font-bold text-slate-400 uppercase block">Activities</span>
++                <span className="text-base font-bold text-slate-800">{diagnosticReport.totalRecordsChecked.activities}</span>
++              </div>
++            </div>
++
++            {/* List of issues if any */}
++            {diagnosticReport.issues.length > 0 && (
++              <div className="space-y-2 pt-2 border-t border-slate-100">
++                <h5 className="text-xs font-bold text-slate-700">Detailed Findings:</h5>
++                <div className="space-y-1.5 max-h-48 overflow-y-auto">
++                  {diagnosticReport.issues.map((iss, i) => (
++                    <div
++                      key={i}
++                      className={`p-2.5 rounded-lg text-xs border flex items-start justify-between gap-2 ${
++                        iss.severity === 'error'
++                          ? 'bg-red-50/70 border-red-200 text-red-800'
++                          : 'bg-amber-50/70 border-amber-200 text-amber-800'
++                      }`}
++                    >
++                      <div>
++                        <span className="font-bold uppercase tracking-wider text-[10px] block mb-0.5">
++                          [{iss.severity}] {iss.entityType} ({iss.entityId})
++                        </span>
++                        <span>{iss.message}</span>
++                      </div>
++                      {iss.suggestedFix && (
++                        <span className="text-[10px] font-medium bg-white px-2 py-0.5 rounded border shrink-0">
++                          Fix: {iss.suggestedFix}
++                        </span>
++                      )}
++                    </div>
++                  ))}
++                </div>
++              </div>
++            )}
++          </div>
++        ) : (
++          <p className="text-xs text-slate-500 italic">
++            Click &ldquo;Run Integrity Audit&rdquo; to execute a real-time verification of all entity foreign keys, workspace scopes, and campaign relationships.
++          </p>
++        )}
++      </div>
++
++      {/* SECTION 2: ACTIVE BRANDS IN CURRENT WORKSPACE */}
++      <div className="bg-white rounded-xl border border-slate-200/80 p-5 shadow-2xs space-y-4">
++        <div className="flex items-center justify-between pb-2 border-b border-slate-100">
++          <div>
++            <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
++              <Layers size={16} className="text-indigo-600" />
++              Active Workspace Brands
++            </h4>
++            <p className="text-xs text-slate-500">
++              Workspace: <strong className="text-slate-800">{activeWorkspace?.name}</strong> ({brands.length} active brands)
++            </p>
++          </div>
++        </div>
++
++        {brands.length === 0 ? (
++          <p className="text-xs text-slate-400 py-4 text-center">
++            No active brands found in this workspace. Create your first brand in the Brands view.
++          </p>
++        ) : (
++          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
++            {brands.map(b => (
++              <div key={b.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50/60 space-y-3">
++                <div className="flex items-center justify-between">
++                  <div className="flex items-center gap-2">
++                    <div
++                      className="w-3.5 h-3.5 rounded-full"
++                      style={{ backgroundColor: b.primaryColor }}
++                    />
++                    <h5 className="text-sm font-bold text-slate-900">{b.name}</h5>
++                  </div>
++                  <span className="text-[10px] font-mono uppercase bg-white px-2 py-0.5 rounded border border-slate-200 text-slate-700 font-bold">
++                    {b.code}
++                  </span>
++                </div>
++
++                <p className="text-xs text-slate-600 leading-relaxed">{b.description || 'No description provided.'}</p>
++
++                <div className="pt-2 border-t border-slate-200/60 text-[11px] text-slate-500 space-y-1">
++                  <div>
++                    <strong className="text-slate-700">Tagline:</strong> {b.tagline || 'None'}
++                  </div>
++                  <div>
++                    <strong className="text-slate-700">Active Content:</strong>{' '}
++                    {content.filter(c => c.brandId === b.id).length} deliverables
++                  </div>
++                  <div>
++                    <strong className="text-slate-700">Active Campaigns:</strong>{' '}
++                    {campaigns.filter(c => c.brandId === b.id).length} campaigns
++                  </div>
++                </div>
++              </div>
++            ))}
++          </div>
++        )}
++      </div>
++
++      {/* SECTION 2.5: BACKEND API & AUTHENTICATION */}
++      <div className="bg-white rounded-xl border border-slate-200/80 p-5 shadow-2xs space-y-4">
++        <div className="flex items-center justify-between">
++          <div className="flex items-center gap-2">
++            <Key size={16} className="text-indigo-600" />
++            <h4 className="text-sm font-bold text-slate-900">Backend API &amp; Authentication</h4>
++          </div>
++          <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
++            {API_BASE_URL}
++          </span>
++        </div>
++
++        <p className="text-xs text-slate-600 leading-relaxed">
++          The frontend connects to the Docker-hosted PostgreSQL backend at{' '}
++          <code className="text-indigo-600 font-mono font-medium">{API_BASE_URL}</code>. In production, mutations and private endpoints require a Bearer Access Token. Tokens are saved strictly in your local browser and are never baked into frontend builds.
++        </p>
++
++        <div className="space-y-3 pt-1">
++          <div>
++            <label className="block text-xs font-semibold text-slate-700 mb-1">
++              Marketing API Access Token (Bearer)
++            </label>
++            <div className="flex items-center gap-2">
++              <div className="relative flex-1">
++                <input
++                  type={showToken ? 'text' : 'password'}
++                  value={tokenInput}
++                  onChange={e => setTokenInput(e.target.value)}
++                  placeholder="Paste your 32+ character API token here..."
++                  className="w-full text-xs font-mono px-3 py-2 pr-10 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
++                />
++                <button
++                  type="button"
++                  onClick={() => setShowToken(!showToken)}
++                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
++                  title={showToken ? 'Hide token' : 'Show token'}
++                >
++                  {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
++                </button>
++              </div>
++
++              <button
++                type="button"
++                onClick={handleSaveToken}
++                className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors cursor-pointer"
++              >
++                <Check size={14} />
++                <span>Save Token</span>
++              </button>
++
++              <button
++                type="button"
++                onClick={handleTestToken}
++                disabled={tokenStatus.type === 'testing'}
++                className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg transition-colors cursor-pointer"
++              >
++                <RefreshCw size={14} className={tokenStatus.type === 'testing' ? 'animate-spin' : ''} />
++                <span>Test Access</span>
++              </button>
++            </div>
++          </div>
++
++          {tokenStatus.message && (
++            <div
++              className={`p-3 rounded-lg text-xs border flex items-center gap-2 ${
++                tokenStatus.type === 'valid' || tokenStatus.type === 'saved'
++                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
++                  : tokenStatus.type === 'invalid'
++                  ? 'bg-red-50 border-red-200 text-red-800'
++                  : 'bg-indigo-50 border-indigo-200 text-indigo-800'
++              }`}
++            >
++              <span className="font-bold shrink-0">
++                {tokenStatus.type === 'valid'
++                  ? '✓ Verified:'
++                  : tokenStatus.type === 'saved'
++                  ? '✓ Saved:'
++                  : tokenStatus.type === 'invalid'
++                  ? '✗ Status:'
++                  : 'ℹ Notice:'}
++              </span>
++              <span>{tokenStatus.message}</span>
++            </div>
++          )}
++        </div>
++      </div>
++
++      {/* SECTION 3: STORAGE & PERSISTENCE ARCHITECTURE */}
++      <div className="bg-white rounded-xl border border-slate-200/80 p-5 shadow-2xs space-y-4">
++        <div className="flex items-center justify-between">
++          <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
++            <Database size={16} className="text-indigo-600" />
++            Persistence &amp; Storage Architecture
++          </h4>
++          <span
++            className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${
++              isOffline
++                ? 'bg-amber-50 text-amber-700 border border-amber-200'
++                : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
++            }`}
++          >
++            {isOffline ? 'Local Storage Fallback' : 'Persistent Backend Active'}
++          </span>
++        </div>
++
++        <p className="text-xs text-slate-600 leading-relaxed">
++          Operational records are written atomically to <code>/data/marketing_db.json</code> on the server with automated backups created before any schema mutation.
++        </p>
++
++        <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 space-y-1">
++          <div>
++            <strong>Workspace Scope:</strong> {activeWorkspace?.name} ({activeWorkspace?.id})
++          </div>
++          <div>
++            <strong>Active Deliverables:</strong> {content.length} content deliverables
++          </div>
++          <div>
++            <strong>Active Campaigns:</strong> {campaigns.length} campaigns
++          </div>
++          <div>
++            <strong>Last Saved At:</strong> {lastSavedAt || 'Synced recently'}
++          </div>
++        </div>
++
++        <div className="flex flex-wrap items-center gap-3 pt-2">
++          <button
++            type="button"
++            onClick={exportToJson}
++            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg shadow-2xs transition-colors cursor-pointer"
++          >
++            <Download size={14} className="text-slate-500" />
++            <span>Download JSON Backup</span>
++          </button>
++
++          <button
++            type="button"
++            onClick={() => setShowResetModal(true)}
++            disabled={isResetting}
++            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors cursor-pointer"
++          >
++            <RefreshCw size={14} className={isResetting ? 'animate-spin' : ''} />
++            <span>Reset Demo Seed Data</span>
++          </button>
++        </div>
++      </div>
++
++      {/* RESET CONFIRMATION MODAL */}
++      {showResetModal && (
++        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
++          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden p-6 space-y-4">
++            <div className="flex items-start gap-3">
++              <span className="p-2.5 rounded-xl bg-red-50 text-red-600 shrink-0">
++                <RefreshCw size={20} />
++              </span>
++              <div>
++                <h3 className="text-base font-bold text-slate-900">Reset Demo Database</h3>
++                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
++                  Are you sure you want to reset the database to clean default demo seeds? All custom records will be restored to initial sample data.
++                </p>
++              </div>
++            </div>
++
++            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
++              <button
++                type="button"
++                onClick={() => setShowResetModal(false)}
++                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
++              >
++                Cancel
++              </button>
++              <button
++                type="button"
++                onClick={confirmReset}
++                className="px-4 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg shadow-2xs cursor-pointer"
++              >
++                Confirm Reset
++              </button>
++            </div>
++          </div>
++        </div>
++      )}
++    </div>
++  );
++};

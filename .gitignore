@@ -9,3 +9,5 @@ coverage/
 *.dump
 *.backup.*
 data/*.pre-postgres-*.json
+.aistudio/
+.playwright-cli/
