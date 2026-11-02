@@ -71,6 +71,7 @@ interface MarketingContextType {
   deleteCampaign: (id: string) => Promise<boolean>;
   createTeamMember: (member: Partial<TeamMember>) => Promise<TeamMember>;
   resetToInitialData: () => Promise<void>;
+  migrateLocalCacheToServer: () => Promise<{ imported: boolean; counts?: Record<string, number> }>;
   runIntegrityAudit: () => Promise<IntegrityDiagnosticReport>;
 
   isLoading: boolean;
@@ -182,20 +183,10 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     async function loadData() {
       setIsLoading(true);
       try {
-        // Import the existing browser cache once before the server snapshot replaces it.
-        const browserCache = localStorage.getItem(LOCAL_STORAGE_DB_KEY);
-        if (browserCache) {
-          try {
-            await apiFetch('/api/migrations/browser-cache', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: browserCache,
-            });
-          } catch (migrationError) {
-            console.warn('Browser cache preservation was not completed:', migrationError);
-          }
-        }
-        const res = await apiFetch('/api/data');
+        // PostgreSQL is authoritative. Legacy browser data is imported only
+        // through the explicit Settings action so another browser cannot win
+        // the one-time migration marker with an empty or stale cache.
+        const res = await apiFetch('/api/data', { cache: 'no-store' });
         if (res.ok) {
           const data = await res.json();
           if (data && Array.isArray(data.workspaces) && Array.isArray(data.content)) {
@@ -278,6 +269,59 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     },
     [allBrands, allContent, allCampaigns, allTeam, allActivities]
   );
+
+  // Explicit, one-time import from the browser that contains the user's unsynced legacy data.
+  // Do not run this automatically: the first browser to call the migration endpoint
+  // owns the global migration marker.
+  const migrateLocalCacheToServer = useCallback(async (): Promise<{ imported: boolean; counts?: Record<string, number> }> => {
+    const cached = localStorage.getItem(LOCAL_STORAGE_DB_KEY);
+    if (!cached) throw new Error('No local browser cache was found in this browser.');
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(cached);
+    } catch {
+      throw new Error('The local browser cache is not valid JSON and cannot be imported.');
+    }
+
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('The local browser cache has an invalid format.');
+    }
+
+    const migrationResponse = await apiFetch('/api/migrations/browser-cache', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const migration = await migrationResponse.json() as { imported: boolean; counts?: Record<string, number> };
+
+    // Always refresh from the shared database after the migration attempt.
+    const dataResponse = await apiFetch('/api/data', { cache: 'no-store' });
+    const data = await dataResponse.json();
+    if (
+      !data ||
+      !Array.isArray(data.workspaces) ||
+      !Array.isArray(data.brands) ||
+      !Array.isArray(data.content) ||
+      !Array.isArray(data.campaigns) ||
+      !Array.isArray(data.team) ||
+      !Array.isArray(data.activities)
+    ) {
+      throw new Error('The shared database returned an invalid data snapshot.');
+    }
+
+    setAllWorkspaces(data.workspaces);
+    setAllBrands(data.brands);
+    setAllContent(data.content);
+    setAllCampaigns(data.campaigns);
+    setAllTeam(data.team);
+    setAllActivities(data.activities);
+    persistState(data.workspaces, data.brands, data.content, data.campaigns, data.team, data.activities);
+    setIsOffline(false);
+    setLastSavedAt(new Date().toLocaleTimeString());
+
+    return migration;
+  }, [persistState]);
 
   // Active workspace object
   const activeWorkspace =
@@ -1238,6 +1282,7 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         deleteCampaign,
         createTeamMember,
         resetToInitialData,
+        migrateLocalCacheToServer,
         runIntegrityAudit,
 
         isLoading,
