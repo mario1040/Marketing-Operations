@@ -213,6 +213,7 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       } catch (err) {
         console.warn('Backend API unavailable, falling back to cache:', err);
+        setIsOffline(true);
       }
 
       // Fallback cache
