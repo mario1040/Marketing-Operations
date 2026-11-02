@@ -83,7 +83,7 @@ interface MarketingContextType {
 const LOCAL_STORAGE_DB_KEY = 'marketing_ops_db_v2';
 const LOCAL_STORAGE_ACTIVE_WS_KEY = 'marketing_ops_active_ws_v2';
 const LOCAL_STORAGE_API_TOKEN_KEY = 'marketing_ops_api_token_v1';
-const API_BASE_URL = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || '';
+const API_BASE_URL = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || 'https://marketing-api.bezaverse.com';
 
 async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   let token = localStorage.getItem(LOCAL_STORAGE_API_TOKEN_KEY);
