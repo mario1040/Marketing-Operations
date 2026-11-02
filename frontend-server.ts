@@ -36,7 +36,7 @@ app.use('/api', async (req, res) => {
     const targetUrl = `${BACKEND_API_URL}${req.originalUrl}`;
     const headers = new Headers();
     for (const [key, val] of Object.entries(req.headers)) {
-      if (val && !['host', 'connection', 'content-length'].includes(key.toLowerCase())) {
+      if (val && !['host', 'connection', 'content-length', 'origin'].includes(key.toLowerCase())) {
         headers.set(key, Array.isArray(val) ? val.join(', ') : val);
       }
     }
