@@ -169,6 +169,19 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     async function loadData() {
       setIsLoading(true);
       try {
+        // Import the existing browser cache once before the server snapshot replaces it.
+        const browserCache = localStorage.getItem(LOCAL_STORAGE_DB_KEY);
+        if (browserCache) {
+          try {
+            await apiFetch('/api/migrations/browser-cache', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: browserCache,
+            });
+          } catch (migrationError) {
+            console.warn('Browser cache preservation was not completed:', migrationError);
+          }
+        }
         const res = await apiFetch('/api/data');
         if (res.ok) {
           const data = await res.json();
