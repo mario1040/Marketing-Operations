@@ -50,6 +50,12 @@ async function startServer() {
     maxAge: 600,
   }));
   app.use(express.json({ limit: '2mb' }));
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    next();
+  });
 
   // Health check is public
   app.get('/api/health', async (_req, res) => {
@@ -94,17 +100,6 @@ async function startServer() {
       return res;
     }) as typeof res.json;
     next();
-  });
-
-  // One-time preservation of any pre-existing browser-local records.
-  app.post('/api/migrations/browser-cache', async (req, res) => {
-    try {
-      const result = await storage.importBrowserCache(req.body);
-      res.json(result);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Browser cache import failed';
-      res.status(400).json({ error: message });
-    }
   });
 
   // --- WORKSPACE ENDPOINTS ---

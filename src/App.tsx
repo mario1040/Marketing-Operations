@@ -17,6 +17,7 @@ import { WorkspacesView } from './views/WorkspacesView';
 import { SettingsView } from './views/SettingsView';
 
 function DashboardApp() {
+  const { isOffline, isLoading } = useMarketing();
   const [currentTab, setCurrentTab] = useState<NavigationTab>('overview');
   const [isUserGuideOpen, setIsUserGuideOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -64,6 +65,18 @@ function DashboardApp() {
           onOpenCreateBrand={() => setCurrentTab('brands')}
         />
 
+        {!isLoading && isOffline && (
+          <div className="flex items-center justify-between gap-3 px-4 py-3 bg-amber-50 border-b border-amber-200 text-amber-900 text-xs">
+            <span>Not connected to PostgreSQL. No browser copy or demo data is being used. Enter the API token in Settings and run Test Access.</span>
+            <button
+              type="button"
+              onClick={() => setCurrentTab('settings')}
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-900 text-white font-semibold"
+            >
+              Open Settings
+            </button>
+          </div>
+        )}
         {/* View Workspace */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
           <div className="max-w-7xl mx-auto pb-12">

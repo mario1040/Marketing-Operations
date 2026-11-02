@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useMarketing, LOCAL_STORAGE_API_TOKEN_KEY, API_BASE_URL, apiFetch } from '../context/MarketingContext';
+import { useMarketing, API_BASE_URL, apiFetch, setApiAccessToken } from '../context/MarketingContext';
 import {
   Settings,
   Database,
@@ -33,7 +33,7 @@ export const SettingsView: React.FC = () => {
     activeWorkspace,
     resetToInitialData,
     runIntegrityAudit,
-    migrateLocalCacheToServer,
+    refreshFromServer,
     lastSavedAt,
     isOffline,
     exportToJson,
@@ -47,17 +47,9 @@ export const SettingsView: React.FC = () => {
   const [diagnosticReport, setDiagnosticReport] = useState<IntegrityDiagnosticReport | null>(null);
   const [repairMessage, setRepairMessage] = useState<string | null>(null);
   const [isRepairing, setIsRepairing] = useState(false);
-  const [isMigratingCache, setIsMigratingCache] = useState(false);
-  const [migrationMessage, setMigrationMessage] = useState<string | null>(null);
 
   // API Token State
-  const [tokenInput, setTokenInput] = useState(() => {
-    try {
-      return localStorage.getItem(LOCAL_STORAGE_API_TOKEN_KEY) || '';
-    } catch {
-      return '';
-    }
-  });
+  const [tokenInput, setTokenInput] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [tokenStatus, setTokenStatus] = useState<{
     type: 'idle' | 'testing' | 'valid' | 'invalid' | 'saved';
@@ -66,14 +58,13 @@ export const SettingsView: React.FC = () => {
 
   const handleSaveToken = () => {
     const clean = tokenInput.trim();
-    if (clean) {
-      localStorage.setItem(LOCAL_STORAGE_API_TOKEN_KEY, clean);
-      setTokenStatus({ type: 'saved', message: 'Token saved to browser localStorage.' });
-    } else {
-      localStorage.removeItem(LOCAL_STORAGE_API_TOKEN_KEY);
-      setTokenStatus({ type: 'saved', message: 'Token cleared from browser.' });
-    }
-    setTimeout(() => setTokenStatus(prev => prev.type === 'saved' ? { type: 'idle' } : prev), 3000);
+    setApiAccessToken(clean);
+    setTokenStatus({
+      type: 'saved',
+      message: clean
+        ? 'Token is active in memory for this page session only; it was not saved in browser storage.'
+        : 'Token cleared from memory.',
+    });
   };
 
   const handleTestToken = async () => {
@@ -86,49 +77,34 @@ export const SettingsView: React.FC = () => {
       }
       // Use the same-origin proxy so Cloud Run and browser clients follow one
       // consistent path and do not depend on cross-origin CORS behavior.
-      const testRes = await fetch('/api/workspaces', { headers });
+      const testRes = await fetch('/api/workspaces', { headers, cache: 'no-store' });
 
       if (testRes.ok) {
+        setApiAccessToken(clean);
+        await refreshFromServer();
         setTokenStatus({
           type: 'valid',
-          message: 'Connection successful! Authenticated with backend database (HTTP 200).',
+          message: 'Connection successful! Authenticated with PostgreSQL (HTTP 200). Data loaded from the server; browser storage is disabled.',
         });
       } else if (testRes.status === 401) {
+        setApiAccessToken('');
         setTokenStatus({
           type: 'invalid',
           message: 'Unauthorized (HTTP 401): The provided API token does not match the backend secret.',
         });
       } else {
+        setApiAccessToken('');
         setTokenStatus({
           type: 'invalid',
           message: `Backend returned HTTP ${testRes.status}. Check API status.`,
         });
       }
     } catch (err: any) {
+      setApiAccessToken('');
       setTokenStatus({
         type: 'invalid',
         message: `Network error reaching backend: ${err?.message || 'Check connection'}`,
       });
-    }
-  };
-
-  const handleMigrateLocalCache = async () => {
-    setIsMigratingCache(true);
-    setMigrationMessage(null);
-    try {
-      const result = await migrateLocalCacheToServer();
-      if (result.imported) {
-        const counts = result.counts
-          ? Object.entries(result.counts).map(([key, value]) => `${key}: ${value}`).join(' · ')
-          : 'Shared database refreshed';
-        setMigrationMessage(`Local browser data imported successfully. ${counts}`);
-      } else {
-        setMigrationMessage('The one-time browser-cache migration was already completed. This screen has been refreshed from PostgreSQL.');
-      }
-    } catch (error) {
-      setMigrationMessage(error instanceof Error ? error.message : 'Browser-cache migration failed.');
-    } finally {
-      setIsMigratingCache(false);
     }
   };
 
@@ -400,8 +376,8 @@ export const SettingsView: React.FC = () => {
         </div>
 
         <p className="text-xs text-slate-600 leading-relaxed">
-          The frontend connects to the Docker-hosted PostgreSQL backend at{' '}
-          <code className="text-indigo-600 font-mono font-medium">{API_BASE_URL}</code>. In production, mutations and private endpoints require a Bearer Access Token. Tokens are saved strictly in your local browser and are never baked into frontend builds.
+          The frontend connects to the shared PostgreSQL backend at{' '}
+          <code className="text-indigo-600 font-mono font-medium">{API_BASE_URL}</code>. Private endpoints require a Bearer Access Token. The token remains in page memory only and is never written to browser storage.
         </p>
 
         <div className="space-y-3 pt-1">
@@ -472,25 +448,6 @@ export const SettingsView: React.FC = () => {
             </div>
           )}
 
-          <div className="pt-3 border-t border-slate-100 space-y-2">
-            <p className="text-xs text-slate-600">
-              To recover records created before PostgreSQL was connected, run this once from the browser that contains the newest local records. This merges those records into the shared database; it does not delete the browser cache.
-            </p>
-            <button
-              type="button"
-              onClick={handleMigrateLocalCache}
-              disabled={isMigratingCache}
-              className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-slate-800 hover:bg-slate-900 disabled:opacity-60 rounded-lg transition-colors cursor-pointer"
-            >
-              <Database size={14} className={isMigratingCache ? 'animate-pulse' : ''} />
-              <span>{isMigratingCache ? 'Importing local records...' : 'Import this browser’s saved data to PostgreSQL'}</span>
-            </button>
-            {migrationMessage && (
-              <div className="p-3 rounded-lg text-xs border border-slate-200 bg-slate-50 text-slate-700">
-                {migrationMessage}
-              </div>
-            )}
-          </div>
         </div>
       </div>
 

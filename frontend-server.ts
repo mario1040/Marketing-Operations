@@ -36,14 +36,20 @@ app.use('/api', async (req, res) => {
     const targetUrl = `${BACKEND_API_URL}${req.originalUrl}`;
     const headers = new Headers();
     for (const [key, val] of Object.entries(req.headers)) {
-      if (val && !['host', 'connection', 'content-length', 'origin'].includes(key.toLowerCase())) {
+      if (val && !['host', 'connection', 'content-length', 'origin', 'accept-encoding'].includes(key.toLowerCase())) {
         headers.set(key, Array.isArray(val) ? val.join(', ') : val);
       }
     }
 
+    // The upstream (Cloudflare/backend) may choose Zstandard otherwise.
+    // Node's proxy must not forward compressed bytes after stripping their encoding header.
+    headers.set('accept-encoding', 'identity');
+    headers.set('cache-control', 'no-cache');
+
     const fetchInit: RequestInit = {
       method: req.method,
       headers,
+      cache: 'no-store',
     };
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -59,10 +65,14 @@ app.use('/api', async (req, res) => {
     const response = await fetch(targetUrl, fetchInit);
     res.status(response.status);
     response.headers.forEach((val, key) => {
-      if (!['transfer-encoding', 'content-encoding'].includes(key.toLowerCase())) {
+      if (!['transfer-encoding', 'content-encoding', 'content-length', 'etag', 'last-modified', 'expires'].includes(key.toLowerCase())) {
         res.setHeader(key, val);
       }
     });
+    // API payloads contain private business records and must never be cached by the browser.
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     const buffer = await response.arrayBuffer();
     res.send(Buffer.from(buffer));
   } catch (err: any) {
