@@ -1,0 +1,36 @@
+services:
+  marketing-api:
+    container_name: marketing-api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the local .env file}
+      API_TOKEN: ${API_TOKEN:?Set API_TOKEN in the local .env file}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      LEGACY_JSON_PATH: /app/data/marketing_db.json
+      DB_POOL_MAX: 10
+    volumes:
+      - ./data:/app/data:ro
+    networks:
+      progroup_default:
+        aliases:
+          - marketing-api
+      marketing-db-net:
+        aliases:
+          - marketing-api
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  progroup_default:
+    external: true
+  marketing-db-net:
+    external: true
