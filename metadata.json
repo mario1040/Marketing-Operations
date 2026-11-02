@@ -1,0 +1,8 @@
+{
+  "name": "Marketing Operations System — The Professor & Profacto",
+  "description": "Multi-brand marketing operations platform for The Professor and Profacto, featuring content calendars, weekly and monthly planning, production pipelines, campaign management, team workloads, and operational reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

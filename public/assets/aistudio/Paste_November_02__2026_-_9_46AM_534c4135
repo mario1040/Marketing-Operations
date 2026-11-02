@@ -1,0 +1,1117 @@
+# MASTER BUILD PROMPT
+## Marketing Operations Dashboard — The Professor & Profacto
+
+Act as a Senior Product Designer, Senior Full-Stack Engineer, Marketing Operations Architect, Database Architect, and QA Engineer.
+
+Your mission is to audit, improve, and extend the existing Marketing Dashboard into a professional Marketing Operations Management System for two brands:
+
+1. The Professor
+2. Profacto
+
+The objective is to build a functional, production-minded MVP that helps the marketing team plan, organize, execute, monitor, and review content across multiple social media platforms.
+
+This is NOT a request to create a static dashboard or a visual prototype.
+
+Build a real, interactive application with persistent data, functional workflows, operational dashboards, filtering, content management, and reporting.
+
+---
+
+# 1. FIRST PRIORITY: AUDIT BEFORE DEVELOPMENT
+
+Before making any changes:
+
+1. Inspect the entire existing project and understand its current architecture.
+2. Identify the current framework, components, routing, database, authentication, integrations, and data structures.
+3. Review the existing Marketing Dashboard, especially the current The Professor implementation.
+4. Identify reusable components, existing design tokens, navigation patterns, charts, tables, cards, and shared utilities.
+5. Identify existing functionality that must remain untouched.
+6. Determine how Profacto can be introduced without duplicating existing modules.
+7. Review current data relationships and identify potential migration risks.
+
+### Critical preservation rules
+
+- Preserve all original data.
+- Do not delete or overwrite existing records.
+- Do not replace working components simply to make the implementation easier.
+- Do not break existing routes, features, integrations, or permissions.
+- Reuse existing components wherever possible.
+- Extend existing architecture instead of rebuilding everything.
+- If the current architecture cannot safely support the new functionality, create a separate, clearly integrated module.
+- If the existing application is inaccessible or cannot be safely extended, create a new standalone dashboard while preserving the original project.
+
+Before implementation, create a concise internal audit and development plan.
+
+Do not stop after presenting the audit. Continue with implementation.
+
+---
+
+# 2. PRODUCT VISION
+
+Transform the current Marketing Dashboard into a centralized Marketing Operations Workspace.
+
+The application must support two independent brands:
+
+- The Professor
+- Profacto
+
+Both brands must have independent content calendars, content plans, performance summaries, and operational visibility.
+
+However, the underlying system must be shared.
+
+Use a multi-brand architecture rather than duplicating the entire application.
+
+### Core product principles
+
+- One centralized system.
+- Two independent brand workspaces.
+- Shared content management engine.
+- Clear operational ownership.
+- Minimal unnecessary complexity.
+- Real-time visibility into execution.
+- Easy weekly and monthly planning.
+- Scalable architecture for future brands.
+
+---
+
+# 3. INFORMATION ARCHITECTURE
+
+Create or extend the application navigation with the following structure:
+
+## Main Navigation
+
+1. Overview
+2. Content Calendar
+   - All Brands
+   - The Professor
+   - Profacto
+3. Content Planning
+   - Weekly Plan
+   - Monthly Plan
+4. Content Production
+5. Campaigns
+6. Reports & Analytics
+7. Team & Responsibilities
+8. Settings
+
+Do not create unnecessary duplicate pages.
+
+Use shared components with brand-specific filters and views.
+
+The navigation should clearly indicate the active brand and current workspace.
+
+---
+
+# 4. GLOBAL OVERVIEW DASHBOARD
+
+Create a premium executive overview showing the operational status of both brands.
+
+### Global KPI Cards
+
+Display:
+
+- Total Content Items
+- Planned Content
+- In Production
+- Editing
+- Awaiting Approval
+- Scheduled Posts
+- Published Content
+- Overdue Content
+
+Each KPI card must display:
+
+- Main value
+- Relevant label
+- Visual indicator
+- Comparison with the previous period when historical data is available
+
+Do not fabricate historical comparisons.
+
+### Brand Comparison
+
+Create a dedicated comparison section:
+
+| Metric | The Professor | Profacto |
+| Total Content | Dynamic | Dynamic |
+| Planned | Dynamic | Dynamic |
+| In Production | Dynamic | Dynamic |
+| Editing | Dynamic | Dynamic |
+| Approved | Dynamic | Dynamic |
+| Scheduled | Dynamic | Dynamic |
+| Published | Dynamic | Dynamic |
+
+### Analytics Visualizations
+
+Include:
+
+- Content distribution by status.
+- Content distribution by platform.
+- Weekly publishing activity.
+- Monthly publishing activity.
+- Brand-level execution comparison.
+- Upcoming publishing schedule.
+
+Use interactive charts with useful tooltips and date filters.
+
+All numbers must come from actual database records.
+
+---
+
+# 5. CONTENT CALENDAR — CORE MODULE
+
+Build a fully functional Content Calendar.
+
+This is the most important new module.
+
+The calendar must support three primary views:
+
+1. Monthly View
+2. Weekly View
+3. List View
+
+Optional: Daily View if it can be implemented without unnecessary complexity.
+
+### Brand Workspace Selector
+
+Provide a prominent brand selector:
+
+- All Brands
+- The Professor
+- Profacto
+
+When selecting a brand, the calendar should show only that brand's content.
+
+Each brand must have its own independent calendar experience.
+
+The All Brands view should allow the team to see both brands together.
+
+### Calendar Design
+
+Create a clean, modern, interactive calendar.
+
+Each content item should appear as a compact card inside its scheduled date.
+
+Each card should display:
+
+- Content title or topic.
+- Brand identifier.
+- Platform icon.
+- Content type.
+- Status indicator.
+- Publishing time when available.
+- Assigned team member.
+
+Use a consistent color system for content statuses.
+
+Clicking a content card should open its details in a polished side panel or modal.
+
+Allow users to:
+
+- Create new content.
+- Edit existing content.
+- View content details.
+- Change status.
+- Change publishing date.
+- Assign a team member.
+- Duplicate a content item.
+- Filter content.
+- Search by topic or title.
+- Navigate between weeks and months.
+
+If supported by the existing architecture, implement drag-and-drop rescheduling.
+
+When a date changes, persist the update and reflect it in every relevant calendar and planning view.
+
+Never silently overwrite conflicting data.
+
+---
+
+# 6. CONTENT DATA MODEL
+
+Every content item must support the following fields:
+
+### Required Core Fields
+
+1. Content ID
+   - Unique identifier.
+
+2. Content Date
+   - The date associated with the content plan.
+
+3. Brand
+   - The Professor
+   - Profacto
+
+4. Platform
+   - Facebook
+   - Instagram
+   - TikTok
+   - LinkedIn
+   - YouTube
+   - Website / Blog
+   - Other
+
+5. Content Type
+   - Static Post
+   - Carousel
+   - Reel
+   - Short Video
+   - Long-form Video
+   - Story
+   - Educational Content
+   - Promotional Content
+   - Testimonial
+   - Blog Article
+   - Other
+
+6. Topic / Content Title
+   - Clear description of the content idea.
+
+7. Campaign
+   - Associated campaign.
+   - Optional if the content is not part of a campaign.
+
+8. Objective
+   - Brand Awareness
+   - Engagement
+   - Lead Generation
+   - Sales / Conversion
+   - Education
+   - Community Building
+   - Traffic
+
+9. Responsible Person
+   - Assigned team member.
+
+10. Status
+    - Planned
+    - In Production
+    - Editing
+    - Approved
+    - Scheduled
+    - Published
+
+11. Scheduled Publishing Date
+    - Actual planned publishing date.
+
+12. Publishing Time
+    - Optional time field.
+
+13. Caption
+    - Full content caption.
+
+14. CTA
+    - Call to action.
+
+### Additional Operational Fields
+
+Include:
+
+- Content Brief
+- Creative Reference / Asset URL
+- Internal Notes
+- Approval Notes
+- Created At
+- Updated At
+- Created By
+- Published At
+- Actual Published URL
+
+Make optional fields truly optional.
+
+Keep the MVP simple while allowing future expansion.
+
+### Important date distinction
+
+Keep the planning date separate from the actual scheduled publishing date when necessary.
+
+This allows the team to plan production independently from publishing.
+
+---
+
+# 7. CONTENT STATUS WORKFLOW
+
+Use exactly these six primary statuses:
+
+1. Planned
+2. In Production
+3. Editing
+4. Approved
+5. Scheduled
+6. Published
+
+### Status Colors
+
+Use a visually consistent system:
+
+- Planned: Neutral Gray
+- In Production: Blue
+- Editing: Purple
+- Approved: Green
+- Scheduled: Cyan
+- Published: Dark Green
+
+These statuses must appear consistently across:
+
+- Calendar cards.
+- Content tables.
+- Content details.
+- KPI cards.
+- Reports.
+- Filters.
+
+### Workflow Logic
+
+Support the following operational flow:
+
+Planned → In Production → Editing → Approved → Scheduled → Published
+
+Allow authorized users to move items backward when revisions are required.
+
+Do not automatically mark content as Published just because its scheduled date has passed.
+
+Publishing status must be explicitly updated or verified.
+
+Maintain an activity history whenever a status, date, or responsible person changes.
+
+---
+
+# 8. ADVANCED FILTERING & SEARCH
+
+Implement functional filters across the Content Calendar.
+
+### Filters
+
+- Brand
+- Platform
+- Content Type
+- Status
+- Responsible Person
+- Campaign
+- Week
+- Month
+- Custom Date Range
+
+### Search
+
+Provide global content search by:
+
+- Topic
+- Content Title
+- Caption
+- Campaign
+- Assigned Person
+
+### Filter Behavior
+
+- Filters must work together.
+- Multiple filters should be combinable.
+- Provide a Clear All option.
+- Display the number of matching content items.
+- Preserve filters when navigating between calendar views where practical.
+- Do not reload the entire application unnecessarily.
+
+---
+
+# 9. BRAND-SPECIFIC WORKSPACES
+
+Create two independent brand experiences.
+
+## A. The Professor
+
+Use the existing brand data.
+
+Preserve its existing content and historical information.
+
+Connect its current dashboard data to the new shared Content Calendar wherever compatible.
+
+Do not create duplicate content records.
+
+## B. Profacto
+
+Create a new brand workspace.
+
+Brand properties:
+
+- Brand Name: Profacto
+- Independent Content Calendar
+- Independent Weekly Plan
+- Independent Monthly Plan
+- Independent Campaign Association
+- Independent Content Metrics
+- Independent Operational Reports
+
+Use the same shared content management components.
+
+Do not invent Profacto's brand guidelines, logo, positioning, or content strategy.
+
+If existing brand assets are available, reuse them.
+
+Otherwise, create a clean temporary visual identity that can easily be customized later.
+
+---
+
+# 10. WEEKLY CONTENT PLANNING
+
+Build a Weekly Content Planning module.
+
+The purpose is to turn the content calendar into an operational execution plan.
+
+### Weekly Overview
+
+Display:
+
+- Week Start Date
+- Week End Date
+- Brand
+- Total Planned Content
+- Content in Production
+- Content Awaiting Approval
+- Scheduled Content
+- Published Content
+- Overdue Content
+
+### Weekly Breakdown
+
+Group content by:
+
+- Day
+- Brand
+- Platform
+- Status
+
+Display an execution table:
+
+| Date | Brand | Platform | Topic | Type | Responsible | Status |
+|------|-------|----------|-------|------|-------------|--------|
+
+### Weekly Review
+
+Include:
+
+- Planned vs Published.
+- Outstanding tasks.
+- Overdue content.
+- Items awaiting approval.
+- Items requiring scheduling.
+- Team workload.
+- Next week's priorities.
+
+Allow the user to navigate between weeks.
+
+Provide a simple weekly review action.
+
+Do not automatically modify content status during reviews.
+
+---
+
+# 11. MONTHLY CONTENT PLANNING
+
+Create a Monthly Planning view.
+
+Display:
+
+- Total content planned.
+- Total content published.
+- Total content scheduled.
+- Content by brand.
+- Content by platform.
+- Content by objective.
+- Monthly execution percentage.
+
+### Monthly Performance
+
+Show:
+
+- Planned vs Published.
+- Publishing consistency.
+- Brand-level content distribution.
+- Platform distribution.
+- Status breakdown.
+- Campaign coverage.
+
+Allow navigation between months.
+
+All calculations must be based on real content records.
+
+Use the following formula:
+
+Execution Rate = (Published Content / Planned Content) × 100
+
+Clearly distinguish content scheduled for the month from content planned for production during the month.
+
+Avoid misleading percentages when the denominator is zero.
+
+---
+
+# 12. CONTENT MANAGEMENT INTERFACE
+
+Build a professional content creation and editing experience.
+
+### New Content Form
+
+Organize the form into logical sections:
+
+SECTION 1 — Basic Information
+- Brand
+- Topic / Title
+- Content Date
+- Platform
+- Content Type
+
+SECTION 2 — Planning
+- Campaign
+- Objective
+- Responsible Person
+- Status
+
+SECTION 3 — Publishing
+- Scheduled Date
+- Publishing Time
+- Caption
+- CTA
+
+SECTION 4 — Production Details
+- Content Brief
+- Creative Reference
+- Internal Notes
+
+### UX Requirements
+
+- Clear field labels.
+- Helpful placeholders.
+- Sensible default values.
+- Required-field validation.
+- Date validation.
+- Save and Cancel actions.
+- Success and error feedback.
+- Confirmation before destructive actions.
+- No accidental form resets.
+
+Support editing existing content without losing previous information.
+
+---
+
+# 13. CAMPAIGN MANAGEMENT
+
+Provide a lightweight Campaign Management module.
+
+Each campaign should include:
+
+- Campaign Name
+- Brand
+- Objective
+- Start Date
+- End Date
+- Description
+- Status
+- Associated Content Items
+
+Campaigns must be filterable by brand.
+
+Allow users to view all content associated with a campaign.
+
+Avoid building a complex campaign automation system in this MVP.
+
+---
+
+# 14. TEAM & RESPONSIBILITIES
+
+Create a simple team management structure.
+
+Support:
+
+- Team Member Name
+- Role
+- Assigned Content
+- Current Workload
+
+Allow content items to be assigned to team members.
+
+Display workload by responsible person.
+
+If authentication and user roles already exist, integrate with them.
+
+Do not create duplicate authentication systems.
+
+If user management is not available, use a simple team member directory that can be managed through Settings.
+
+---
+
+# 15. UI/UX DESIGN DIRECTION
+
+The application must look and feel like a premium modern SaaS marketing operations platform.
+
+Design references and inspiration:
+
+- Linear
+- Notion Calendar
+- Asana
+- ClickUp
+- Modern analytics dashboards
+- High-quality B2B SaaS interfaces
+
+Do not copy these products directly.
+
+Create a distinctive and cohesive design.
+
+### Visual Direction
+
+Use:
+
+- Clean layouts.
+- Strong visual hierarchy.
+- Premium typography.
+- Carefully balanced whitespace.
+- Refined cards.
+- Subtle borders.
+- Soft shadows.
+- Consistent spacing.
+- Elegant micro-interactions.
+- Clear information density.
+- Professional data visualization.
+
+Avoid:
+
+- Generic AI-generated dashboard aesthetics.
+- Excessive gradients.
+- Excessive glassmorphism.
+- Oversized KPI cards.
+- Too many decorative elements.
+- Unnecessary animations.
+- Excessive rounded cards.
+- Cluttered layouts.
+- Unreadable small typography.
+
+### Suggested Design System
+
+Use a modern neutral foundation:
+
+- Background: #F7F8FA
+- Surface: #FFFFFF
+- Primary Text: #172033
+- Secondary Text: #697386
+- Borders: #E7EAF0
+- Primary Accent: #4F46E5
+
+Use status-specific colors consistently.
+
+The design system must remain compatible with the existing dashboard's visual identity.
+
+If the existing dashboard has an established design system, preserve and extend it instead of forcing these suggested colors.
+
+### Layout
+
+Desktop:
+- Sidebar navigation.
+- Compact top navigation.
+- Main content workspace.
+- Optional contextual right-side panel.
+
+Tablet:
+- Adaptive sidebar.
+- Responsive calendar grid.
+
+Mobile:
+- Compact navigation.
+- Mobile-friendly content cards.
+- Horizontally scrollable calendar where necessary.
+- Touch-friendly controls.
+- Forms optimized for mobile.
+
+### Interaction Design
+
+Implement:
+
+- Smooth but subtle transitions.
+- Hover states.
+- Active states.
+- Loading skeletons.
+- Empty states.
+- Error states.
+- Success notifications.
+- Confirmation dialogs.
+- Tooltips where useful.
+
+Every interactive element must have a real function.
+
+Do not create decorative buttons that do nothing.
+
+---
+
+# 16. BRAND VISUAL DIFFERENTIATION
+
+Users must immediately understand which brand they are working on.
+
+Create a consistent brand identification system.
+
+For example:
+
+- The Professor: Dedicated brand badge and identity.
+- Profacto: Dedicated brand badge and identity.
+
+Use brand identity in:
+
+- Calendar cards.
+- Content tables.
+- Brand selectors.
+- Dashboard summaries.
+- Reports.
+- Campaign pages.
+
+Do not invent logos.
+
+Use existing logos and assets if available.
+
+---
+
+# 17. DATABASE & TECHNICAL ARCHITECTURE
+
+Build on the existing technology stack.
+
+Do not introduce a new framework or database without a strong technical reason.
+
+### Architecture Requirements
+
+Use a shared multi-brand content model.
+
+Suggested entities:
+
+1. Brands
+2. ContentItems
+3. Campaigns
+4. TeamMembers
+5. ActivityLogs
+
+### Suggested Relationships
+
+- One Brand → Many Content Items.
+- One Brand → Many Campaigns.
+- One Campaign → Many Content Items.
+- One Team Member → Many Assigned Content Items.
+- One Content Item → Many Activity Log Entries.
+
+### Data Integrity
+
+- Use unique IDs.
+- Maintain relationships using stable identifiers.
+- Validate all incoming data.
+- Prevent duplicate records where appropriate.
+- Preserve existing records.
+- Use safe migrations.
+- Add appropriate database indexes.
+- Handle errors gracefully.
+
+### Persistence
+
+All created and edited content must persist after refreshing the application.
+
+Use the existing database if available.
+
+If no persistent backend exists, choose a suitable persistent storage solution supported by the current environment.
+
+Do not rely on temporary React state as the only data source.
+
+Do not use localStorage as the only production data persistence layer.
+
+### Security
+
+- Validate inputs.
+- Sanitize user-provided content.
+- Protect sensitive operations.
+- Respect existing authentication and permissions.
+- Never expose API keys in frontend code.
+- Keep secrets in environment variables.
+- Apply appropriate database access controls.
+
+---
+
+# 18. REPORTING & ANALYTICS
+
+Create an operational reporting section.
+
+### Core Reports
+
+1. Content by Brand.
+2. Content by Status.
+3. Content by Platform.
+4. Content by Type.
+5. Content by Responsible Person.
+6. Weekly Publishing Report.
+7. Monthly Publishing Report.
+8. Planned vs Published Report.
+
+### Date Filtering
+
+Allow reporting by:
+
+- This Week
+- Last Week
+- This Month
+- Last Month
+- Custom Range
+
+### Export
+
+Where supported, allow users to export:
+
+- CSV.
+- Weekly Content Plan.
+- Monthly Content Plan.
+
+Exported data must respect the active filters.
+
+---
+
+# 19. DATA UPDATE & WEEKLY OPERATING PROCEDURE
+
+The application should support a clear weekly working routine.
+
+### Recommended Workflow
+
+MONDAY — Planning
+- Review last week's execution.
+- Create the upcoming weekly plan.
+- Assign responsibilities.
+- Set production deadlines.
+
+TUESDAY–WEDNESDAY — Production
+- Update content to In Production.
+- Add creative references.
+- Track progress.
+
+THURSDAY — Editing & Approval
+- Move content to Editing.
+- Review captions and creative assets.
+- Update approved items.
+
+BEFORE PUBLISHING — Scheduling
+- Confirm publishing date and time.
+- Move approved items to Scheduled.
+
+AFTER PUBLISHING
+- Verify publication.
+- Add the actual published URL.
+- Move status to Published.
+
+WEEKLY REVIEW
+- Review completion rates.
+- Identify overdue content.
+- Review workload.
+- Prepare next week's priorities.
+
+This routine should be visible through a small help section inside the application.
+
+Do not hardcode these weekdays into the workflow logic. Make the operating procedure configurable if needed.
+
+---
+
+# 20. QUALITY ASSURANCE & TESTING
+
+Testing is mandatory.
+
+Do not claim the application is complete without verifying its core functionality.
+
+### Test 1 — Existing System Preservation
+
+- Existing dashboard loads correctly.
+- Existing The Professor data remains available.
+- Existing routes continue working.
+- Existing features are not broken.
+
+### Test 2 — Brand Management
+
+- The Professor workspace loads.
+- Profacto workspace loads.
+- Brand switching works.
+- Content remains associated with the correct brand.
+- No accidental cross-brand data mixing.
+
+### Test 3 — Content CRUD
+
+- Create content.
+- View content.
+- Edit content.
+- Update status.
+- Change publishing date.
+- Assign responsible person.
+- Duplicate content.
+- Delete only after explicit confirmation.
+
+### Test 4 — Calendar
+
+- Monthly view works.
+- Weekly view works.
+- List view works.
+- Calendar navigation works.
+- Content appears on the correct date.
+- Editing dates updates the calendar.
+- Refreshing preserves data.
+
+### Test 5 — Filters
+
+- Brand filter.
+- Platform filter.
+- Status filter.
+- Week filter.
+- Month filter.
+- Combined filters.
+- Clear All.
+
+### Test 6 — Planning
+
+- Weekly totals are correct.
+- Monthly totals are correct.
+- Brand summaries are accurate.
+- Planned vs Published calculations are accurate.
+- Empty-state calculations are handled.
+
+### Test 7 — Responsiveness
+
+- Desktop.
+- Tablet.
+- Mobile.
+
+### Test 8 — Regression
+
+Verify that no existing functionality has been negatively affected.
+
+Fix discovered bugs before considering the MVP complete.
+
+---
+
+# 21. IMPLEMENTATION PRIORITIES
+
+Follow this implementation order:
+
+PHASE 1 — Audit
+- Inspect existing application.
+- Identify reusable components.
+- Understand data structure.
+- Define safe integration strategy.
+
+PHASE 2 — Core Data Architecture
+- Add Profacto.
+- Establish shared multi-brand content structure.
+- Preserve existing The Professor records.
+- Implement safe persistence.
+
+PHASE 3 — Content Calendar
+- Monthly view.
+- Weekly view.
+- List view.
+- Content creation and editing.
+- Brand-specific filtering.
+
+PHASE 4 — Planning
+- Weekly content planning.
+- Monthly content planning.
+- Brand summaries.
+- Operational metrics.
+
+PHASE 5 — Management
+- Campaigns.
+- Team assignments.
+- Activity history.
+
+PHASE 6 — Analytics & Polish
+- Reporting.
+- Responsive design.
+- Empty states.
+- Loading states.
+- Interaction refinement.
+
+PHASE 7 — Testing
+- Functional tests.
+- Data integrity tests.
+- Regression tests.
+- Final quality review.
+
+Prioritize a fully working core calendar over partially implemented advanced features.
+
+---
+
+# 22. FINAL DELIVERABLES
+
+At completion, provide:
+
+1. A working enhanced Marketing Dashboard.
+2. A dedicated The Professor content workspace.
+3. A dedicated Profacto content workspace.
+4. A functional shared Content Calendar.
+5. Weekly and monthly planning views.
+6. Brand and status summaries.
+7. Functional filters and search.
+8. Content creation and editing workflows.
+9. A concise user guide.
+10. A technical implementation summary.
+11. Testing results.
+12. A list of any remaining limitations.
+
+### User Guide Requirements
+
+Create a simple in-app guide explaining:
+
+- How to switch between brands.
+- How to add new content.
+- How to update content status.
+- How to change publishing dates.
+- How to assign team members.
+- How to use calendar filters.
+- How to conduct weekly reviews.
+- How to review monthly performance.
+
+---
+
+# 23. NON-NEGOTIABLE EXECUTION RULES
+
+1. Do not stop after generating a plan.
+2. Do not deliver only a UI mockup.
+3. Do not generate fake dashboard metrics.
+4. Do not fabricate existing brand information.
+5. Do not delete original data.
+6. Do not replace functioning modules unnecessarily.
+7. Do not create duplicate content records.
+8. Do not leave buttons or filters non-functional.
+9. Do not use mock data as the permanent source of truth.
+10. Do not claim tests passed unless they were actually executed.
+11. Do not expose secrets or API credentials.
+12. Keep the implementation maintainable and easy to review.
+
+If something cannot be implemented because a required integration, database, or permission is unavailable, implement the best safe alternative and clearly document the limitation.
+
+Do not silently skip requirements.
+
+---
+
+# 24. DEFINITION OF DONE
+
+The MVP is considered complete only when:
+
+- The existing dashboard is preserved.
+- Both brands are accessible.
+- Each brand has an independent content calendar.
+- The shared content system works.
+- All six content statuses work.
+- Content can be created, edited, and persisted.
+- Monthly, weekly, and list views work.
+- Brand, platform, status, week, and month filters work.
+- Weekly and monthly summaries reflect actual data.
+- Team assignments work.
+- Existing functionality passes regression checks.
+- The interface is responsive and polished.
+- A concise user guide is available.
+
+## FINAL INSTRUCTION
+
+Start by auditing the current project and its actual files, components, and data structures.
+
+Then implement the system directly within the existing project.
+
+Make thoughtful product and engineering decisions independently.
+
+Prioritize data safety, operational usability, visual quality, and functional completeness.
+
+The final result should feel like a mature, premium SaaS Marketing Operations Platform — not a generic dashboard template.
+
+Build the actual working product, not just a demonstration.
