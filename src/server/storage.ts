@@ -39,10 +39,14 @@ export interface DatabaseSchema {
 }
 
 export class StorageRepository {
-  private db: DatabaseSchema;
+  protected db!: DatabaseSchema;
 
-  constructor() {
-    this.db = this.initAndMigrate();
+  constructor(deferInitialization = false) {
+    if (!deferInitialization) this.db = this.initAndMigrate();
+  }
+
+  protected setDatabase(data: DatabaseSchema): void {
+    this.db = data;
   }
 
   private initAndMigrate(): DatabaseSchema {
@@ -73,7 +77,7 @@ export class StorageRepository {
     return fresh;
   }
 
-  private getDefaultSchema(): DatabaseSchema {
+  protected getDefaultSchema(): DatabaseSchema {
     return {
       workspaces: JSON.parse(JSON.stringify(INITIAL_WORKSPACES)),
       brands: JSON.parse(JSON.stringify(INITIAL_BRANDS)),
@@ -87,7 +91,7 @@ export class StorageRepository {
   /**
    * Idempotent migration from flat multi-brand schema to multi-workspace hierarchy
    */
-  private migrateExistingData(parsed: any): DatabaseSchema {
+  protected migrateExistingData(parsed: any): DatabaseSchema {
     const data: DatabaseSchema = {
       workspaces: Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0
         ? parsed.workspaces
@@ -155,7 +159,7 @@ export class StorageRepository {
     return data;
   }
 
-  private save(data: DatabaseSchema): void {
+  protected save(data: DatabaseSchema): void {
     try {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });

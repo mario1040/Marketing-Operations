@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+*.dump
+*.backup.*
+data/*.pre-postgres-*.json

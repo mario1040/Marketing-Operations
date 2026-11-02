@@ -82,6 +82,34 @@ interface MarketingContextType {
 
 const LOCAL_STORAGE_DB_KEY = 'marketing_ops_db_v2';
 const LOCAL_STORAGE_ACTIVE_WS_KEY = 'marketing_ops_active_ws_v2';
+const LOCAL_STORAGE_API_TOKEN_KEY = 'marketing_ops_api_token_v1';
+const API_BASE_URL = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || 'https://marketing-api.bezaverse.com';
+
+async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  let token = localStorage.getItem(LOCAL_STORAGE_API_TOKEN_KEY);
+  if (!token) {
+    token = window.prompt('Enter your Marketing API access token');
+    if (!token?.trim()) throw new Error('Marketing API access token is required');
+    token = token.trim();
+    localStorage.setItem(LOCAL_STORAGE_API_TOKEN_KEY, token);
+  }
+
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', `Bearer ${token}`);
+  const requestUrl = typeof input === 'string' && input.startsWith('/api/')
+    ? `${API_BASE_URL}${input}`
+    : input;
+  const response = await fetch(requestUrl, { ...init, headers });
+  if (!response.ok) {
+    const details = await response.json().catch(() => null) as { error?: string } | null;
+    if (response.status === 401) localStorage.removeItem(LOCAL_STORAGE_API_TOKEN_KEY);
+    throw new Error(details?.error || `Marketing API request failed (${response.status})`);
+  }
+  if ((init.method || 'GET').toUpperCase() !== 'GET') {
+    window.dispatchEvent(new Event('marketing-api-saved'));
+  }
+  return response;
+}
 
 const defaultFilters: FilterState = {
   brandId: 'all',
@@ -134,6 +162,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, []);
 
+  useEffect(() => {
+    const handleSaved = () => {
+      setLastSavedAt(new Date().toLocaleTimeString());
+      setIsOffline(false);
+    };
+    window.addEventListener('marketing-api-saved', handleSaved);
+    return () => window.removeEventListener('marketing-api-saved', handleSaved);
+  }, []);
+
   // Sync activeBrandId with filters
   useEffect(() => {
     setFilters(prev => ({ ...prev, brandId: activeBrandId }));
@@ -144,7 +181,20 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     async function loadData() {
       setIsLoading(true);
       try {
-        const res = await fetch('/api/data');
+        // Import the existing browser cache once before the server snapshot replaces it.
+        const browserCache = localStorage.getItem(LOCAL_STORAGE_DB_KEY);
+        if (browserCache) {
+          try {
+            await apiFetch('/api/migrations/browser-cache', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: browserCache,
+            });
+          } catch (migrationError) {
+            console.warn('Browser cache preservation was not completed:', migrationError);
+          }
+        }
+        const res = await apiFetch('/api/data');
         if (res.ok) {
           const data = await res.json();
           if (data && Array.isArray(data.workspaces) && Array.isArray(data.content)) {
@@ -163,6 +213,7 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       } catch (err) {
         console.warn('Backend API unavailable, falling back to cache:', err);
+        setIsOffline(true);
       }
 
       // Fallback cache
@@ -199,34 +250,9 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     loadData();
   }, []);
 
-  // Persist state to localStorage
-  const persistState = useCallback(
-    (
-      newWorkspaces = allWorkspaces,
-      newBrands = allBrands,
-      newContent = allContent,
-      newCampaigns = allCampaigns,
-      newTeam = allTeam,
-      newActivities = allActivities
-    ) => {
-      const payload = {
-        workspaces: newWorkspaces,
-        brands: newBrands,
-        content: newContent,
-        campaigns: newCampaigns,
-        team: newTeam,
-        activities: newActivities,
-      };
-
-      try {
-        localStorage.setItem(LOCAL_STORAGE_DB_KEY, JSON.stringify(payload));
-      } catch (e) {
-        console.error('Failed to sync to localStorage:', e);
-      }
-      setLastSavedAt(new Date().toLocaleTimeString());
-    },
-    [allWorkspaces, allBrands, allContent, allCampaigns, allTeam, allActivities]
-  );
+  // PostgreSQL is the source of truth. Do not cache optimistic writes locally;
+  // the browser cache is retained only as a one-time migration source / offline read cache.
+  const persistState = useCallback((..._snapshot: unknown[]) => undefined, []);
 
   // Active workspace object
   const activeWorkspace =
@@ -283,13 +309,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(updated);
 
       try {
-        await fetch('/api/workspaces', {
+        await apiFetch('/api/workspaces', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(newWs),
         });
       } catch (e) {
         console.warn('API workspace create failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       // Switch to newly created workspace
@@ -317,13 +345,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(updated);
 
       try {
-        await fetch(`/api/workspaces/${id}`, {
+        await apiFetch(`/api/workspaces/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updatedWs),
         });
       } catch (e) {
         console.warn('API workspace update failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       return updatedWs;
@@ -353,9 +383,11 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
 
       try {
-        await fetch(`/api/workspaces/${id}`, { method: 'DELETE' });
+        await apiFetch(`/api/workspaces/${id}`, { method: 'DELETE' });
       } catch (e) {
         console.warn('API workspace archive failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       return true;
@@ -410,9 +442,11 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       );
 
       try {
-        await fetch(`/api/workspaces/${id}?permanent=true&cascade=${cascade}`, { method: 'DELETE' });
+        await apiFetch(`/api/workspaces/${id}?permanent=true&cascade=${cascade}`, { method: 'DELETE' });
       } catch (e) {
         console.warn('API workspace delete failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       return true;
@@ -451,13 +485,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(allWorkspaces, updated);
 
       try {
-        await fetch(`/api/workspaces/${currentWsId}/brands`, {
+        await apiFetch(`/api/workspaces/${currentWsId}/brands`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(newBrand),
         });
       } catch (e) {
         console.warn('API brand create failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       return newBrand;
@@ -484,13 +520,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(allWorkspaces, updated);
 
       try {
-        await fetch(`/api/brands/${id}`, {
+        await apiFetch(`/api/brands/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updatedBrand),
         });
       } catch (e) {
         console.warn('API brand update failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       return updatedBrand;
@@ -511,13 +549,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
 
       try {
-        await fetch(`/api/brands/${id}`, {
+        await apiFetch(`/api/brands/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'Archived' }),
         });
       } catch (e) {
         console.warn('API brand archive failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       return true;
@@ -638,13 +678,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         persistState(allWorkspaces, allBrands, updatedList, allCampaigns, allTeam, updatedActivities);
 
         try {
-          await fetch(`/api/content/${savedItem.id}`, {
+          await apiFetch(`/api/content/${savedItem.id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(savedItem),
           });
         } catch (e) {
           console.warn('API update failed, state persisted locally:', e);
+        setIsOffline(true);
+        throw e;
         }
       } else {
         const newId = `cnt-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
@@ -674,13 +716,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         persistState(allWorkspaces, allBrands, updatedList, allCampaigns, allTeam, updatedActivities);
 
         try {
-          await fetch(`/api/workspaces/${currentWsId}/content`, {
+          await apiFetch(`/api/workspaces/${currentWsId}/content`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(savedItem),
           });
         } catch (e) {
           console.warn('API create failed, state persisted locally:', e);
+        setIsOffline(true);
+        throw e;
         }
       }
 
@@ -713,9 +757,11 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(allWorkspaces, allBrands, updatedList, allCampaigns, allTeam, updatedActivities);
 
       try {
-        await fetch(`/api/content/${id}`, { method: 'DELETE' });
+        await apiFetch(`/api/content/${id}`, { method: 'DELETE' });
       } catch (e) {
         console.warn('API delete failed, synced locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       setIsModalOpen(false);
@@ -758,13 +804,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(allWorkspaces, allBrands, updatedList, allCampaigns, allTeam, updatedActivities);
 
       try {
-        await fetch(`/api/content/${id}`, {
+        await apiFetch(`/api/content/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updatedItem),
         });
       } catch (e) {
         console.warn('API status update failed, synced locally:', e);
+        setIsOffline(true);
+        throw e;
       }
     },
     [allContent, allActivities, allWorkspaces, allBrands, allCampaigns, allTeam, persistState]
@@ -803,13 +851,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(allWorkspaces, allBrands, updatedList, allCampaigns, allTeam, updatedActivities);
 
       try {
-        await fetch(`/api/content/${id}`, {
+        await apiFetch(`/api/content/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updatedItem),
         });
       } catch (e) {
         console.warn('API date update failed, synced locally:', e);
+        setIsOffline(true);
+        throw e;
       }
     },
     [allContent, allActivities, allWorkspaces, allBrands, allCampaigns, allTeam, persistState]
@@ -841,13 +891,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(allWorkspaces, allBrands, allContent, updated);
 
       try {
-        await fetch(`/api/workspaces/${currentWsId}/campaigns`, {
+        await apiFetch(`/api/workspaces/${currentWsId}/campaigns`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(newCamp),
         });
       } catch (e) {
         console.warn('API campaign creation failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       return newCamp;
@@ -885,13 +937,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(allWorkspaces, allBrands, updatedContent, updatedCampaigns);
 
       try {
-        await fetch(`/api/campaigns/${id}`, {
+        await apiFetch(`/api/campaigns/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updatedCamp),
         });
       } catch (e) {
         console.warn('API campaign update failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       return updatedCamp;
@@ -911,9 +965,11 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(allWorkspaces, allBrands, updatedContent, updatedCampaigns);
 
       try {
-        await fetch(`/api/campaigns/${id}`, { method: 'DELETE' });
+        await apiFetch(`/api/campaigns/${id}`, { method: 'DELETE' });
       } catch (e) {
         console.warn('API campaign delete failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       return true;
@@ -923,7 +979,7 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const runIntegrityAudit = useCallback(async (): Promise<IntegrityDiagnosticReport> => {
     try {
-      const res = await fetch('/api/diagnostics/integrity');
+      const res = await apiFetch('/api/diagnostics/integrity');
       if (res.ok) {
         return await res.json();
       }
@@ -958,13 +1014,15 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistState(allWorkspaces, allBrands, allContent, allCampaigns, updated);
 
       try {
-        await fetch(`/api/workspaces/${currentWsId}/team`, {
+        await apiFetch(`/api/workspaces/${currentWsId}/team`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(newMember),
         });
       } catch (e) {
         console.warn('API team creation failed, saved locally:', e);
+        setIsOffline(true);
+        throw e;
       }
 
       return newMember;
@@ -973,6 +1031,7 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const resetToInitialData = useCallback(async () => {
+    await apiFetch('/api/reset-data', { method: 'POST' });
     setAllWorkspaces(INITIAL_WORKSPACES);
     setAllBrands(INITIAL_BRANDS);
     setAllContent(INITIAL_CONTENT);
@@ -981,12 +1040,6 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setAllActivities(INITIAL_ACTIVITIES);
     setActiveWorkspaceId(DEFAULT_WORKSPACE_ID);
     localStorage.removeItem(LOCAL_STORAGE_DB_KEY);
-
-    try {
-      await fetch('/api/reset-data', { method: 'POST' });
-    } catch (e) {
-      console.warn('API reset failed:', e);
-    }
   }, [setActiveWorkspaceId]);
 
   // Filtered items based on active filters in current workspace
