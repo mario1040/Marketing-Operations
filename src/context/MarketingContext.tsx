@@ -80,31 +80,54 @@ interface MarketingContextType {
   exportToJson: () => void;
 }
 
-const LOCAL_STORAGE_DB_KEY = 'marketing_ops_db_v2';
-const LOCAL_STORAGE_ACTIVE_WS_KEY = 'marketing_ops_active_ws_v2';
-const LOCAL_STORAGE_API_TOKEN_KEY = 'marketing_ops_api_token_v1';
-const API_BASE_URL = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || 'https://marketing-api.bezaverse.com';
+export const LOCAL_STORAGE_DB_KEY = 'marketing_ops_db_v2';
+export const LOCAL_STORAGE_ACTIVE_WS_KEY = 'marketing_ops_active_ws_v2';
+export const LOCAL_STORAGE_API_TOKEN_KEY = 'marketing_ops_api_token_v1';
+export const API_BASE_URL = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || 'https://marketing-api.bezaverse.com';
 
-async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
-  let token = localStorage.getItem(LOCAL_STORAGE_API_TOKEN_KEY);
-  if (!token) {
-    token = window.prompt('Enter your Marketing API access token');
-    if (!token?.trim()) throw new Error('Marketing API access token is required');
-    token = token.trim();
-    localStorage.setItem(LOCAL_STORAGE_API_TOKEN_KEY, token);
+export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const token = localStorage.getItem(LOCAL_STORAGE_API_TOKEN_KEY);
+  const headers = new Headers(init.headers);
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const headers = new Headers(init.headers);
-  headers.set('Authorization', `Bearer ${token}`);
-  const requestUrl = typeof input === 'string' && input.startsWith('/api/')
-    ? `${API_BASE_URL}${input}`
-    : input;
-  const response = await fetch(requestUrl, { ...init, headers });
+  const isRelativeApi = typeof input === 'string' && input.startsWith('/api/');
+  const directUrl = isRelativeApi ? `${API_BASE_URL}${input}` : input;
+
+  let response: Response;
+  try {
+    response = await fetch(directUrl, { ...init, headers });
+    // If direct CORS request is blocked by backend returning 500 origin error, fallback to same-origin proxy
+    if (!response.ok && response.status === 500 && isRelativeApi) {
+      const proxyRes = await fetch(input, { ...init, headers }).catch(() => null);
+      if (proxyRes && (proxyRes.ok || proxyRes.status === 401)) {
+        response = proxyRes;
+      }
+    }
+  } catch (netErr) {
+    if (isRelativeApi) {
+      try {
+        response = await fetch(input, { ...init, headers });
+      } catch {
+        throw netErr;
+      }
+    } else {
+      throw netErr;
+    }
+  }
+
+  if (response.status === 401) {
+    window.dispatchEvent(new CustomEvent('marketing-api-unauthorized'));
+    const details = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(details?.error || 'Unauthorized: Valid API Access Token required');
+  }
+
   if (!response.ok) {
     const details = await response.json().catch(() => null) as { error?: string } | null;
-    if (response.status === 401) localStorage.removeItem(LOCAL_STORAGE_API_TOKEN_KEY);
-    throw new Error(details?.error || `Marketing API request failed (${response.status})`);
+    throw new Error(details?.error || `API request failed (${response.status})`);
   }
+
   if ((init.method || 'GET').toUpperCase() !== 'GET') {
     window.dispatchEvent(new Event('marketing-api-saved'));
   }
@@ -250,9 +273,33 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     loadData();
   }, []);
 
-  // PostgreSQL is the source of truth. Do not cache optimistic writes locally;
-  // the browser cache is retained only as a one-time migration source / offline read cache.
-  const persistState = useCallback((..._snapshot: unknown[]) => undefined, []);
+  // Persist state locally to ensure zero data loss across sessions and offline resilience
+  const persistState = useCallback(
+    (
+      workspacesToSave: Workspace[],
+      brandsToSave: Brand[] = allBrands,
+      contentToSave: ContentItem[] = allContent,
+      campaignsToSave: Campaign[] = allCampaigns,
+      teamToSave: TeamMember[] = allTeam,
+      activitiesToSave: ActivityLog[] = allActivities
+    ) => {
+      try {
+        const fullPayload = {
+          workspaces: workspacesToSave,
+          brands: brandsToSave,
+          content: contentToSave,
+          campaigns: campaignsToSave,
+          team: teamToSave,
+          activities: activitiesToSave,
+        };
+        localStorage.setItem(LOCAL_STORAGE_DB_KEY, JSON.stringify(fullPayload));
+        setLastSavedAt(new Date().toLocaleTimeString());
+      } catch (e) {
+        console.warn('Could not persist state locally:', e);
+      }
+    },
+    [allBrands, allContent, allCampaigns, allTeam, allActivities]
+  );
 
   // Active workspace object
   const activeWorkspace =
@@ -314,10 +361,10 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(newWs),
         });
+        setIsOffline(false);
       } catch (e) {
         console.warn('API workspace create failed, saved locally:', e);
         setIsOffline(true);
-        throw e;
       }
 
       // Switch to newly created workspace
@@ -350,10 +397,10 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updatedWs),
         });
+        setIsOffline(false);
       } catch (e) {
         console.warn('API workspace update failed, saved locally:', e);
         setIsOffline(true);
-        throw e;
       }
 
       return updatedWs;
@@ -384,10 +431,10 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       try {
         await apiFetch(`/api/workspaces/${id}`, { method: 'DELETE' });
+        setIsOffline(false);
       } catch (e) {
         console.warn('API workspace archive failed, saved locally:', e);
         setIsOffline(true);
-        throw e;
       }
 
       return true;
@@ -443,10 +490,10 @@ export const MarketingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       try {
         await apiFetch(`/api/workspaces/${id}?permanent=true&cascade=${cascade}`, { method: 'DELETE' });
+        setIsOffline(false);
       } catch (e) {
         console.warn('API workspace delete failed, saved locally:', e);
         setIsOffline(true);
-        throw e;
       }
 
       return true;

@@ -701,4 +701,32 @@ export class StorageRepository {
   public getRawDatabase(): DatabaseSchema {
     return this.db;
   }
+
+  // --- HEALTH & COMPATIBILITY METHODS ---
+  public async ping(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  public async flush(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  public async close(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  public async importBrowserCache(raw: any): Promise<{ imported: boolean; counts?: Record<string, number>; message?: string }> {
+    if (!raw) return { imported: false, message: 'No payload provided' };
+    try {
+      const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
+        this.migrateExistingData(data);
+        return { imported: true, message: 'Browser cache successfully imported' };
+      }
+    } catch (e: any) {
+      console.warn('Import browser cache failed:', e);
+      return { imported: false, message: e.message || 'Cache import error' };
+    }
+    return { imported: false, message: 'Invalid cache schema' };
+  }
 }

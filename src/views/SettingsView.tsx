@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useMarketing } from '../context/MarketingContext';
+import { useMarketing, LOCAL_STORAGE_API_TOKEN_KEY, API_BASE_URL } from '../context/MarketingContext';
 import {
   Settings,
   Database,
@@ -15,6 +15,12 @@ import {
   Layers,
   Wrench,
   Search,
+  Key,
+  Globe,
+  Lock,
+  Eye,
+  EyeOff,
+  Check,
 } from 'lucide-react';
 import { IntegrityDiagnosticReport } from '../types';
 
@@ -40,6 +46,69 @@ export const SettingsView: React.FC = () => {
   const [diagnosticReport, setDiagnosticReport] = useState<IntegrityDiagnosticReport | null>(null);
   const [repairMessage, setRepairMessage] = useState<string | null>(null);
   const [isRepairing, setIsRepairing] = useState(false);
+
+  // API Token State
+  const [tokenInput, setTokenInput] = useState(() => {
+    try {
+      return localStorage.getItem(LOCAL_STORAGE_API_TOKEN_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [showToken, setShowToken] = useState(false);
+  const [tokenStatus, setTokenStatus] = useState<{
+    type: 'idle' | 'testing' | 'valid' | 'invalid' | 'saved';
+    message?: string;
+  }>({ type: 'idle' });
+
+  const handleSaveToken = () => {
+    const clean = tokenInput.trim();
+    if (clean) {
+      localStorage.setItem(LOCAL_STORAGE_API_TOKEN_KEY, clean);
+      setTokenStatus({ type: 'saved', message: 'Token saved to browser localStorage.' });
+    } else {
+      localStorage.removeItem(LOCAL_STORAGE_API_TOKEN_KEY);
+      setTokenStatus({ type: 'saved', message: 'Token cleared from browser.' });
+    }
+    setTimeout(() => setTokenStatus(prev => prev.type === 'saved' ? { type: 'idle' } : prev), 3000);
+  };
+
+  const handleTestToken = async () => {
+    setTokenStatus({ type: 'testing', message: 'Verifying with https://marketing-api.bezaverse.com...' });
+    const clean = tokenInput.trim();
+    try {
+      const headers = new Headers();
+      if (clean) {
+        headers.set('Authorization', `Bearer ${clean}`);
+      }
+      const testRes = await fetch(`${API_BASE_URL}/api/workspaces`, { headers }).catch(async () => {
+        // Fallback to same-origin proxy
+        return fetch('/api/workspaces', { headers });
+      });
+
+      if (testRes.ok) {
+        setTokenStatus({
+          type: 'valid',
+          message: 'Connection successful! Authenticated with backend database (HTTP 200).',
+        });
+      } else if (testRes.status === 401) {
+        setTokenStatus({
+          type: 'invalid',
+          message: 'Unauthorized (HTTP 401): The provided API token does not match the backend secret.',
+        });
+      } else {
+        setTokenStatus({
+          type: 'invalid',
+          message: `Backend returned HTTP ${testRes.status}. Check API status.`,
+        });
+      }
+    } catch (err: any) {
+      setTokenStatus({
+        type: 'invalid',
+        message: `Network error reaching backend: ${err?.message || 'Check connection'}`,
+      });
+    }
+  };
 
   const handleRunAudit = async () => {
     setIsRunningAudit(true);
@@ -294,6 +363,93 @@ export const SettingsView: React.FC = () => {
             ))}
           </div>
         )}
+      </div>
+
+      {/* SECTION 2.5: BACKEND API & AUTHENTICATION */}
+      <div className="bg-white rounded-xl border border-slate-200/80 p-5 shadow-2xs space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Key size={16} className="text-indigo-600" />
+            <h4 className="text-sm font-bold text-slate-900">Backend API &amp; Authentication</h4>
+          </div>
+          <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+            {API_BASE_URL}
+          </span>
+        </div>
+
+        <p className="text-xs text-slate-600 leading-relaxed">
+          The frontend connects to the Docker-hosted PostgreSQL backend at{' '}
+          <code className="text-indigo-600 font-mono font-medium">{API_BASE_URL}</code>. In production, mutations and private endpoints require a Bearer Access Token. Tokens are saved strictly in your local browser and are never baked into frontend builds.
+        </p>
+
+        <div className="space-y-3 pt-1">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Marketing API Access Token (Bearer)
+            </label>
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  type={showToken ? 'text' : 'password'}
+                  value={tokenInput}
+                  onChange={e => setTokenInput(e.target.value)}
+                  placeholder="Paste your 32+ character API token here..."
+                  className="w-full text-xs font-mono px-3 py-2 pr-10 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowToken(!showToken)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                  title={showToken ? 'Hide token' : 'Show token'}
+                >
+                  {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSaveToken}
+                className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors cursor-pointer"
+              >
+                <Check size={14} />
+                <span>Save Token</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTestToken}
+                disabled={tokenStatus.type === 'testing'}
+                className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg transition-colors cursor-pointer"
+              >
+                <RefreshCw size={14} className={tokenStatus.type === 'testing' ? 'animate-spin' : ''} />
+                <span>Test Access</span>
+              </button>
+            </div>
+          </div>
+
+          {tokenStatus.message && (
+            <div
+              className={`p-3 rounded-lg text-xs border flex items-center gap-2 ${
+                tokenStatus.type === 'valid' || tokenStatus.type === 'saved'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                  : tokenStatus.type === 'invalid'
+                  ? 'bg-red-50 border-red-200 text-red-800'
+                  : 'bg-indigo-50 border-indigo-200 text-indigo-800'
+              }`}
+            >
+              <span className="font-bold shrink-0">
+                {tokenStatus.type === 'valid'
+                  ? '✓ Verified:'
+                  : tokenStatus.type === 'saved'
+                  ? '✓ Saved:'
+                  : tokenStatus.type === 'invalid'
+                  ? '✗ Status:'
+                  : 'ℹ Notice:'}
+              </span>
+              <span>{tokenStatus.message}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* SECTION 3: STORAGE & PERSISTENCE ARCHITECTURE */}

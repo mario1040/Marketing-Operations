@@ -92,10 +92,12 @@ export const WorkspacesView: React.FC<WorkspacesViewProps> = ({
   };
 
   const handleInitiateDelete = (ws: Workspace) => {
-    if (workspaces.length <= 1) {
+    const activeCount = workspaces.filter(w => w.status !== 'Archived').length;
+    if (activeCount <= 1) {
       setCannotDeleteWarning(
         `Cannot delete "${ws.name}". This is currently the only active workspace on the platform. A Marketing Operations platform requires at least one active workspace. Please create another workspace first before deleting this one.`
       );
+      setWorkspaceToDelete(null);
       return;
     }
     setWorkspaceToDelete(ws);
@@ -121,6 +123,7 @@ export const WorkspacesView: React.FC<WorkspacesViewProps> = ({
     } catch (err: any) {
       console.error('Delete workspace error:', err);
       setCannotDeleteWarning(err.message || 'Failed to delete workspace.');
+      setWorkspaceToDelete(null);
     } finally {
       setIsDeleting(false);
     }
@@ -539,32 +542,49 @@ export const WorkspacesView: React.FC<WorkspacesViewProps> = ({
       {cannotDeleteWarning && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden p-6 space-y-4">
-            <div className="flex items-start gap-3">
-              <span className="p-2.5 rounded-xl bg-amber-50 text-amber-600 shrink-0">
-                <AlertTriangle size={22} />
-              </span>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-base font-bold text-slate-900">
-                  Cannot Delete Workspace
-                </h3>
-                <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
-                  {cannotDeleteWarning}
-                </p>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <span className="p-2.5 rounded-xl bg-amber-50 text-amber-600 shrink-0">
+                  <AlertTriangle size={22} />
+                </span>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-base font-bold text-slate-900">
+                    Cannot Delete Workspace / تعذر حذف مساحة العمل
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
+                    {cannotDeleteWarning}
+                  </p>
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setCannotDeleteWarning(null);
+                  setWorkspaceToDelete(null);
+                }}
+                className="text-slate-400 hover:text-slate-700 p-1 cursor-pointer"
+                title="Dismiss message / إغلاق"
+              >
+                <X size={18} />
+              </button>
             </div>
 
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setCannotDeleteWarning(null)}
+                onClick={() => {
+                  setCannotDeleteWarning(null);
+                  setWorkspaceToDelete(null);
+                }}
                 className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
               >
-                Close
+                Dismiss / إغلاق
               </button>
               <button
                 type="button"
                 onClick={() => {
                   setCannotDeleteWarning(null);
+                  setWorkspaceToDelete(null);
                   setIsCreateOpen(true);
                 }}
                 className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-2xs cursor-pointer"
