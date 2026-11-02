@@ -50,6 +50,12 @@ async function startServer() {
     maxAge: 600,
   }));
   app.use(express.json({ limit: '2mb' }));
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    next();
+  });
 
   // Health check is public
   app.get('/api/health', async (_req, res) => {
