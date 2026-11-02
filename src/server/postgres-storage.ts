@@ -1,15 +1,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import { StorageRepository, DatabaseSchema } from './storage';
 
+const COLLECTIONS = [
+  { key: 'workspaces', table: 'marketing_workspaces' },
+  { key: 'brands', table: 'marketing_brands' },
+  { key: 'content', table: 'marketing_content' },
+  { key: 'campaigns', table: 'marketing_campaigns' },
+  { key: 'team', table: 'marketing_team_members' },
+  { key: 'activities', table: 'marketing_activity_logs' },
+] as const;
+
 /**
- * PostgreSQL-backed repository.
+ * PostgreSQL persistence adapter.
  *
- * The current domain model is intentionally stored as a single JSONB snapshot
- * while preserving the existing repository contract. Every mutation is queued
- * and committed to PostgreSQL; startup never overwrites an existing database.
- * This keeps legacy IDs and relationships intact during the first migration.
+ * Domain entities live in dedicated PostgreSQL tables with primary keys,
+ * workspace indexes, stable row ordering, and JSONB payloads for flexible
+ * domain fields. A transaction replaces the six collections atomically so
+ * existing synchronous domain rules can be retained during this migration.
  */
 export class PostgresStorageRepository extends StorageRepository {
   private readonly pool: Pool;
@@ -45,88 +54,122 @@ export class PostgresStorageRepository extends StorageRepository {
       )
     `);
     await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS marketing_app_state (
+      CREATE TABLE IF NOT EXISTS marketing_app_meta (
         id TEXT PRIMARY KEY CHECK (id = 'primary'),
-        payload JSONB NOT NULL,
         revision BIGINT NOT NULL DEFAULT 1,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
 
-    this.initialized = true;
-    const existing = await this.pool.query<{ payload: DatabaseSchema }>(
-      "SELECT payload FROM marketing_app_state WHERE id = 'primary'"
-    );
+    for (const collection of COLLECTIONS) {
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS ${collection.table} (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT,
+          position INTEGER NOT NULL,
+          payload JSONB NOT NULL
+        )
+      `);
+      await this.pool.query(`CREATE INDEX IF NOT EXISTS ${collection.table}_workspace_idx ON ${collection.table} (workspace_id)`);
+      await this.pool.query(`CREATE INDEX IF NOT EXISTS ${collection.table}_position_idx ON ${collection.table} (position)`);
+    }
 
-    if (existing.rowCount && existing.rows[0]) {
-      this.setDatabase(existing.rows[0].payload);
+    const meta = await this.pool.query("SELECT revision FROM marketing_app_meta WHERE id = 'primary'");
+    if (meta.rowCount) {
+      this.setDatabase(await this.loadSnapshot(this.pool));
+      this.initialized = true;
       return;
     }
 
+    this.initialized = true;
     const legacyPath = path.resolve(process.env.LEGACY_JSON_PATH || './data/marketing_db.json');
-    let initial: DatabaseSchema;
-
     if (fs.existsSync(legacyPath)) {
       const raw = fs.readFileSync(legacyPath, 'utf8');
       const parsed: unknown = JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { workspaces?: unknown }).workspaces)) {
         throw new Error('Legacy JSON database is invalid; refusing to seed PostgreSQL');
       }
-      initial = this.migrateExistingData(parsed);
+      const migrated = this.migrateExistingData(parsed);
+      this.setDatabase(migrated);
+      await this.flush();
     } else {
-      initial = this.getDefaultSchema();
+      const initial = this.getDefaultSchema();
+      this.setDatabase(initial);
+      await this.persistSnapshot(initial);
     }
+  }
 
-    this.setDatabase(initial);
-    await this.persistSnapshot(initial);
-    await this.flush();
+  private async loadSnapshot(client: Pool | PoolClient): Promise<DatabaseSchema> {
+    const result = {} as DatabaseSchema;
+    for (const collection of COLLECTIONS) {
+      const rows = await client.query<{ payload: DatabaseSchema[typeof collection.key][number] }>(
+        `SELECT payload FROM ${collection.table} ORDER BY position ASC`
+      );
+      (result[collection.key] as unknown[]) = rows.rows.map(row => row.payload);
+    }
+    return result;
+  }
+
+  private async writeSnapshot(client: PoolClient, data: DatabaseSchema): Promise<void> {
+    for (const collection of COLLECTIONS) {
+      await client.query(`DELETE FROM ${collection.table}`);
+      const records = data[collection.key] as unknown as Array<Record<string, unknown>>;
+      if (records.length) {
+        await client.query(
+          `INSERT INTO ${collection.table} (id, workspace_id, position, payload)
+           SELECT item->>'id',
+                  NULLIF(item->>'workspaceId', ''),
+                  ordinality::INTEGER,
+                  item
+           FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS source(item, ordinality)`,
+          [JSON.stringify(records)]
+        );
+      }
+    }
+    await client.query(`
+      INSERT INTO marketing_app_meta (id, revision, updated_at)
+      VALUES ('primary', 1, NOW())
+      ON CONFLICT (id) DO UPDATE
+      SET revision = marketing_app_meta.revision + 1, updated_at = NOW()
+    `);
+  }
+
+  private async persistSnapshot(data: DatabaseSchema): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await this.writeSnapshot(client, data);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   protected save(data: DatabaseSchema): void {
-    if (!this.initialized) {
-      throw new Error('PostgreSQL repository is not initialized');
-    }
-    const snapshot = JSON.stringify(data);
+    if (!this.initialized) throw new Error('PostgreSQL repository is not initialized');
+    const snapshot = JSON.parse(JSON.stringify(data)) as DatabaseSchema;
     this.writeQueue = this.writeQueue
       .catch(() => undefined)
-      .then(async () => {
-        await this.pool.query(
-          `INSERT INTO marketing_app_state (id, payload, revision, updated_at)
-           VALUES ('primary', $1::jsonb, 1, NOW())
-           ON CONFLICT (id) DO UPDATE
-           SET payload = EXCLUDED.payload,
-               revision = marketing_app_state.revision + 1,
-               updated_at = NOW()`,
-          [snapshot]
-        );
-        this.lastWriteError = null;
-      })
+      .then(() => this.persistSnapshot(snapshot))
+      .then(() => { this.lastWriteError = null; })
       .catch(error => {
         this.lastWriteError = error;
         throw error;
       });
   }
 
-  private async persistSnapshot(data: DatabaseSchema): Promise<void> {
-    const snapshot = JSON.stringify(data);
-    await this.pool.query(
-      `INSERT INTO marketing_app_state (id, payload, revision, updated_at)
-       VALUES ('primary', $1::jsonb, 1, NOW())
-       ON CONFLICT (id) DO NOTHING`,
-      [snapshot]
-    );
-  }
-
-
   /**
    * One-time import of the browser's pre-PostgreSQL cache. Browser records win
    * on matching IDs because that cache may contain the user's latest edits.
-   * A migration marker makes repeated page loads safe and idempotent.
+   * The migration marker makes repeated page loads safe and idempotent.
    */
   public async importBrowserCache(input: unknown): Promise<{ imported: boolean; counts?: Record<string, number> }> {
     if (!input || typeof input !== 'object') throw new Error('Invalid browser cache payload');
     const candidate = input as Partial<DatabaseSchema>;
-    const keys: (keyof DatabaseSchema)[] = ['workspaces', 'brands', 'content', 'campaigns', 'team', 'activities'];
+    const keys = COLLECTIONS.map(collection => collection.key);
     for (const key of keys) {
       if (!Array.isArray(candidate[key])) throw new Error(`Invalid browser cache collection: ${key}`);
     }
@@ -134,20 +177,16 @@ export class PostgresStorageRepository extends StorageRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(714202611)');
       const marker = await client.query(
-        "SELECT name FROM marketing_app_migrations WHERE name = 'browser-cache-v1' FOR UPDATE"
+        "SELECT name FROM marketing_app_migrations WHERE name = 'browser-cache-v1'"
       );
       if (marker.rowCount) {
         await client.query('COMMIT');
         return { imported: false };
       }
 
-      const currentResult = await client.query<{ payload: DatabaseSchema }>(
-        "SELECT payload FROM marketing_app_state WHERE id = 'primary' FOR UPDATE"
-      );
-      if (!currentResult.rowCount) throw new Error('PostgreSQL state has not been initialized');
-      const current = currentResult.rows[0].payload;
-
+      const current = this.db;
       const merged = {} as DatabaseSchema;
       const counts: Record<string, number> = {};
       for (const key of keys) {
@@ -162,10 +201,7 @@ export class PostgresStorageRepository extends StorageRepository {
         counts[key] = merged[key].length;
       }
 
-      await client.query(
-        "UPDATE marketing_app_state SET payload = $1::jsonb, revision = revision + 1, updated_at = NOW() WHERE id = 'primary'",
-        [JSON.stringify(merged)]
-      );
+      await this.writeSnapshot(client, merged);
       await client.query(
         "INSERT INTO marketing_app_migrations (name, details) VALUES ('browser-cache-v1', $1::jsonb)",
         [JSON.stringify({ counts })]
@@ -183,9 +219,7 @@ export class PostgresStorageRepository extends StorageRepository {
 
   public async flush(): Promise<void> {
     await this.writeQueue;
-    if (this.lastWriteError) {
-      throw this.lastWriteError;
-    }
+    if (this.lastWriteError) throw this.lastWriteError;
   }
 
   public async ping(): Promise<void> {
